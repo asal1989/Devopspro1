@@ -1,0 +1,50 @@
+1  yum install git -y
+    2  git --version
+    3  clear
+    4  pwd
+    5  date
+    6  whoami
+    7  exit
+    8  hostname
+    9  du
+   10  df
+   11  top
+   12  history
+   13  uname -a
+   14  lsblk
+   15  history
+   16  clear
+   17  mkdir devops
+   18  ls
+   19  cd devops
+   20  ls
+   21  touch file1
+   22  ls
+   23  cat > file2
+   24  cat file2
+   25  cat file1
+   26  vi file3
+   27  cat file3
+   28  exit
+   29  mkdir naveen abishek abhi poovarasan 
+   30  ls
+   31  rm -rf abhi abishek naveen poovarasan
+   32  ls
+   33  cd devops
+   34  ls
+   35  cat file1
+   36  cat file2
+   37  cat file3
+   38  touch naveen.txt
+   39  ls
+   40  mv naveen.txt naveen.yml
+   41  ls
+   42  rm -rf file1
+   43  ls
+   44  mv file2 file3
+   45  ls
+   46  cat file3
+   47  ls -larth
+   48  chmod 765 file3
+   49  ls -larth
+   50  history
