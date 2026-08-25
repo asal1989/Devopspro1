@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../../../../core/constants/app_spacing.dart';
 import '../../../../core/router/app_router.dart';
+import '../../../../shared/widgets/page_thumbnail.dart';
 import '../../domain/entities/scan_page.dart';
 import '../providers/scan_session_provider.dart';
 
@@ -33,6 +35,7 @@ class PageManagerScreen extends StatelessWidget {
                 context.read<ScanSessionProvider>().setActivePage(index);
                 context.push(AppRoutes.enhance);
               },
+              onReplace: (index) => _replacePage(context, index),
             ),
       bottomNavigationBar: SafeArea(
         child: Padding(
@@ -59,6 +62,13 @@ class PageManagerScreen extends StatelessWidget {
       ),
     );
   }
+
+  Future<void> _replacePage(BuildContext context, int index) async {
+    final file = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 92);
+    if (file == null) return;
+    if (!context.mounted) return;
+    context.read<ScanSessionProvider>().replacePageWithFile(index, file.path);
+  }
 }
 
 class ReorderableGridView extends StatelessWidget {
@@ -67,6 +77,7 @@ class ReorderableGridView extends StatelessWidget {
   final void Function(int index) onDelete;
   final void Function(int index) onRotate;
   final void Function(int index) onEdit;
+  final void Function(int index) onReplace;
 
   const ReorderableGridView({
     super.key,
@@ -75,6 +86,7 @@ class ReorderableGridView extends StatelessWidget {
     required this.onDelete,
     required this.onRotate,
     required this.onEdit,
+    required this.onReplace,
   });
 
   @override
@@ -90,18 +102,7 @@ class ReorderableGridView extends StatelessWidget {
           margin: const EdgeInsets.only(bottom: AppSpacing.sm),
           child: ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 4),
-            leading: RotatedBox(
-              quarterTurns: page.rotationDegrees ~/ 90,
-              child: Container(
-                width: 44,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: page.originalAssetColor,
-                  borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
-                  border: Border.all(color: Colors.black12),
-                ),
-              ),
-            ),
+            leading: PageThumbnail(page: page),
             title: Text('Page ${index + 1}', style: const TextStyle(fontWeight: FontWeight.w600)),
             subtitle: Text(page.filter.label),
             trailing: Row(
@@ -109,7 +110,17 @@ class ReorderableGridView extends StatelessWidget {
               children: [
                 IconButton(icon: const Icon(Icons.edit_rounded), onPressed: () => onEdit(index)),
                 IconButton(icon: const Icon(Icons.rotate_right_rounded), onPressed: () => onRotate(index)),
-                IconButton(icon: const Icon(Icons.delete_outline_rounded), onPressed: () => onDelete(index)),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert_rounded),
+                  onSelected: (value) {
+                    if (value == 'replace') onReplace(index);
+                    if (value == 'delete') onDelete(index);
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(value: 'replace', child: Text('Replace page')),
+                    PopupMenuItem(value: 'delete', child: Text('Delete page')),
+                  ],
+                ),
                 const Icon(Icons.drag_handle_rounded),
               ],
             ),

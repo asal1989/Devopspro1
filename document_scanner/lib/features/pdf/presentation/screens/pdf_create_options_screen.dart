@@ -1,5 +1,9 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../../../../core/constants/app_spacing.dart';
@@ -7,6 +11,8 @@ import '../../../../core/router/app_router.dart';
 import '../../../documents/domain/entities/document.dart';
 import '../../../documents/presentation/providers/documents_provider.dart';
 import '../../../scanner/presentation/providers/scan_session_provider.dart';
+import '../../../settings/presentation/providers/settings_provider.dart';
+import '../../data/pdf_generator.dart';
 import '../../domain/entities/pdf_options.dart';
 
 /// Collects document title, page format, quality, compression, and
@@ -25,6 +31,21 @@ class _PdfCreateOptionsScreenState extends State<PdfCreateOptionsScreen> {
   bool _compress = false;
   bool _passwordProtected = false;
   final _passwordController = TextEditingController();
+  bool _generating = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final editingId = context.read<ScanSessionProvider>().editingDocumentId;
+    if (editingId != null) {
+      for (final doc in context.read<DocumentsProvider>().all) {
+        if (doc.id == editingId) {
+          _titleController.text = doc.name;
+          break;
+        }
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -33,22 +54,101 @@ class _PdfCreateOptionsScreenState extends State<PdfCreateOptionsScreen> {
     super.dispose();
   }
 
-  void _createPdf(BuildContext context) {
+  int get _jpegQuality {
+    var quality = switch (_quality) {
+      PdfQuality.high => 90,
+      PdfQuality.medium => 75,
+      PdfQuality.low => 50,
+    };
+    if (_compress) quality = (quality - 20).clamp(20, 100);
+    return quality;
+  }
+
+  Future<void> _createPdf(BuildContext context) async {
     final session = context.read<ScanSessionProvider>();
-    if (session.isEmpty) return;
+    if (session.isEmpty || _generating) return;
 
-    final document = ScannedDocument(
-      id: 'doc-${DateTime.now().millisecondsSinceEpoch}',
-      name: _titleController.text.trim().isEmpty ? 'Untitled Document' : _titleController.text.trim(),
-      pages: session.pages,
-      createdAt: DateTime.now(),
-      sizeInKb: session.pageCount * (_quality == PdfQuality.high ? 480 : (_quality == PdfQuality.medium ? 260 : 120)),
-      thumbnailColor: const Color(0xFF2F6FED),
-    );
+    setState(() => _generating = true);
 
-    context.read<DocumentsProvider>().addDocument(document);
-    session.reset();
-    context.pushReplacement(AppRoutes.pdfPreview, extra: document);
+    final pages = session.pages;
+    final jobs = pages
+        .map((page) => PdfPageJob(
+              imagePath: page.originalImagePath,
+              fallbackColor: page.originalAssetColor,
+              cropCorners: page.cropCorners,
+              rotationDegrees: page.rotationDegrees,
+              filter: page.filter,
+              brightness: page.brightness,
+              contrast: page.contrast,
+              sharpness: page.sharpness,
+            ))
+        .toList();
+
+    try {
+      final bytes = await compute(
+        generatePdfInIsolate,
+        GeneratePdfRequest(pages: jobs, format: _format, jpegQuality: _jpegQuality),
+      );
+
+      final docsDir = await getApplicationDocumentsDirectory();
+      final fileName = 'scan_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      final file = File('${docsDir.path}/$fileName');
+      await file.writeAsBytes(bytes, flush: true);
+
+      if (!context.mounted) return;
+
+      final settings = context.read<SettingsProvider>();
+      if (!settings.saveOriginalImage) {
+        for (final page in pages) {
+          final path = page.originalImagePath;
+          if (path == null) continue;
+          try {
+            final original = File(path);
+            if (await original.exists()) await original.delete();
+          } catch (_) {
+            // Best-effort cleanup only — a stray temp file is never fatal.
+          }
+        }
+      }
+
+      final documentsProvider = context.read<DocumentsProvider>();
+      final editingId = session.editingDocumentId;
+      ScannedDocument? existing;
+      if (editingId != null) {
+        for (final d in documentsProvider.all) {
+          if (d.id == editingId) existing = d;
+        }
+      }
+
+      final enteredName = _titleController.text.trim();
+      final document = existing != null
+          ? existing.copyWith(
+              name: enteredName.isEmpty ? existing.name : enteredName,
+              pages: pages,
+              sizeInKb: (bytes.length / 1024).ceil(),
+              pdfPath: file.path,
+            )
+          : ScannedDocument(
+              id: 'doc-${DateTime.now().millisecondsSinceEpoch}',
+              name: enteredName.isEmpty ? 'Untitled Document' : enteredName,
+              pages: pages,
+              createdAt: DateTime.now(),
+              sizeInKb: (bytes.length / 1024).ceil(),
+              thumbnailColor: const Color(0xFF2F6FED),
+              pdfPath: file.path,
+            );
+
+      if (!context.mounted) return;
+      documentsProvider.updateDocument(document);
+      session.reset();
+      context.pushReplacement(AppRoutes.pdfPreview, extra: document);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _generating = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("We couldn't create the PDF. Please try again.")),
+      );
+    }
   }
 
   @override
@@ -109,7 +209,7 @@ class _PdfCreateOptionsScreenState extends State<PdfCreateOptionsScreen> {
             value: _passwordProtected,
             onChanged: (v) => setState(() => _passwordProtected = v),
           ),
-          if (_passwordProtected)
+          if (_passwordProtected) ...[
             Padding(
               padding: const EdgeInsets.only(top: AppSpacing.sm),
               child: TextField(
@@ -118,14 +218,29 @@ class _PdfCreateOptionsScreenState extends State<PdfCreateOptionsScreen> {
                 decoration: const InputDecoration(labelText: 'Set Password'),
               ),
             ),
+            const Padding(
+              padding: EdgeInsets.only(top: AppSpacing.xs),
+              child: Text(
+                'PDF encryption is not wired up yet — this password is saved with the '
+                'document but does not yet lock the file.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+          ],
         ],
       ),
       bottomNavigationBar: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.lg),
           child: ElevatedButton(
-            onPressed: pageCount == 0 ? null : () => _createPdf(context),
-            child: const Text('Create PDF'),
+            onPressed: (pageCount == 0 || _generating) ? null : () => _createPdf(context),
+            child: _generating
+                ? const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white),
+                  )
+                : const Text('Create PDF'),
           ),
         ),
       ),

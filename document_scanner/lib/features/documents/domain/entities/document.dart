@@ -17,6 +17,11 @@ class ScannedDocument {
   final String? extractedText;
   final Color thumbnailColor;
 
+  /// Path to the generated PDF file on disk, once created. Null for
+  /// documents that have not been through PDF generation yet (or the
+  /// Phase 1 mock samples).
+  final String? pdfPath;
+
   const ScannedDocument({
     required this.id,
     required this.name,
@@ -28,6 +33,7 @@ class ScannedDocument {
     this.category = DocumentCategory.general,
     this.extractedText,
     this.thumbnailColor = Colors.blueGrey,
+    this.pdfPath,
   });
 
   int get pageCount => pages.length;
@@ -40,6 +46,7 @@ class ScannedDocument {
     int? sizeInKb,
     DocumentCategory? category,
     String? extractedText,
+    String? pdfPath,
   }) {
     return ScannedDocument(
       id: id,
@@ -52,6 +59,7 @@ class ScannedDocument {
       category: category ?? this.category,
       extractedText: extractedText ?? this.extractedText,
       thumbnailColor: thumbnailColor,
+      pdfPath: pdfPath ?? this.pdfPath,
     );
   }
 }

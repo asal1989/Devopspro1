@@ -59,6 +59,18 @@ class DocumentsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Replaces an existing document in place (same id), used when a
+  /// saved document is re-opened for editing and re-saved.
+  void updateDocument(ScannedDocument document) {
+    final index = _documents.indexWhere((d) => d.id == document.id);
+    if (index == -1) {
+      _documents.insert(0, document);
+    } else {
+      _documents[index] = document;
+    }
+    notifyListeners();
+  }
+
   void toggleFavorite(String id) {
     final index = _documents.indexWhere((d) => d.id == id);
     if (index == -1) return;

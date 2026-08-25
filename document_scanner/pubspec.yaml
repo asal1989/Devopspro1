@@ -22,6 +22,19 @@ dependencies:
   google_fonts: ^6.2.1
   uuid: ^4.4.0
 
+  # Camera & gallery (Phase 2)
+  camera: ^0.11.0+2
+  image_picker: ^1.1.2
+  permission_handler: ^11.3.1
+
+  # Image processing (Phase 3)
+  image: ^4.2.0
+
+  # PDF generation, storage & sharing (Phase 4)
+  pdf: ^3.11.1
+  path_provider: ^2.1.4
+  share_plus: ^10.0.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

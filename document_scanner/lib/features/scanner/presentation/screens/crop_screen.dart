@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
@@ -7,7 +9,9 @@ import '../../../../core/router/app_router.dart';
 import '../providers/scan_session_provider.dart';
 
 /// Interactive crop screen: drag each corner, move the whole crop area,
-/// rotate, reset, or re-run auto detection.
+/// rotate, reset, or re-run auto detection. The corner points are the
+/// real perspective-correction input — [ImageProcessor.perspectiveCrop]
+/// warps the captured image using exactly these four normalized points.
 class CropScreen extends StatefulWidget {
   const CropScreen({super.key});
 
@@ -18,13 +22,8 @@ class CropScreen extends StatefulWidget {
 class _CropScreenState extends State<CropScreen> {
   // Corner positions as fractions (0..1) of the image box, in order:
   // top-left, top-right, bottom-right, bottom-left.
-  List<Offset> _corners = const [
-    Offset(0.08, 0.06),
-    Offset(0.92, 0.06),
-    Offset(0.92, 0.94),
-    Offset(0.08, 0.94),
-  ];
-  int _rotation = 0;
+  late List<Offset> _corners;
+  late int _rotation;
 
   static const _defaultCorners = [
     Offset(0.08, 0.06),
@@ -40,6 +39,14 @@ class _CropScreenState extends State<CropScreen> {
     Offset(0.05, 0.96),
   ];
 
+  @override
+  void initState() {
+    super.initState();
+    final page = context.read<ScanSessionProvider>().activePage;
+    _corners = page?.cropCorners ?? List.of(_defaultCorners);
+    _rotation = page?.rotationDegrees ?? 0;
+  }
+
   void _reset() => setState(() => _corners = List.of(_defaultCorners));
 
   void _autoDetect() => setState(() => _corners = List.of(_autoDetectCorners));
@@ -50,7 +57,7 @@ class _CropScreenState extends State<CropScreen> {
     final session = context.read<ScanSessionProvider>();
     final active = session.activePage;
     if (active != null) {
-      session.updateActivePage(active.copyWith(rotationDegrees: _rotation));
+      session.updateActivePage(active.copyWith(rotationDegrees: _rotation, cropCorners: _corners));
     }
     context.push(AppRoutes.enhance);
   }
@@ -59,6 +66,7 @@ class _CropScreenState extends State<CropScreen> {
   Widget build(BuildContext context) {
     final page = context.watch<ScanSessionProvider>().activePage;
     final docColor = page?.originalAssetColor ?? const Color(0xFFEFEAE0);
+    final imagePath = page?.originalImagePath;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -82,7 +90,9 @@ class _CropScreenState extends State<CropScreen> {
                           child: AnimatedRotation(
                             turns: _rotation / 360,
                             duration: const Duration(milliseconds: 200),
-                            child: Container(color: docColor),
+                            child: imagePath != null
+                                ? Image.file(File(imagePath), fit: BoxFit.contain)
+                                : Container(color: docColor),
                           ),
                         ),
                         CustomPaint(

@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/constants/app_spacing.dart';
 import '../../../../core/router/app_router.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../../shared/widgets/page_thumbnail.dart';
 import '../../../documents/domain/entities/document.dart';
 import '../../../documents/presentation/providers/documents_provider.dart';
+import '../../../scanner/presentation/providers/scan_session_provider.dart';
 
 /// Professional preview of the generated PDF before final save, with
 /// page-level actions and quick access to OCR.
@@ -31,6 +34,11 @@ class PdfPreviewScreen extends StatelessWidget {
             icon: const Icon(Icons.text_snippet_rounded),
             tooltip: 'Extract Text',
             onPressed: () => context.push(AppRoutes.ocr, extra: doc),
+          ),
+          IconButton(
+            icon: const Icon(Icons.ios_share_rounded),
+            tooltip: 'Share',
+            onPressed: () => _share(context, doc),
           ),
           IconButton(
             icon: const Icon(Icons.drive_file_rename_outline_rounded),
@@ -59,12 +67,8 @@ class PdfPreviewScreen extends StatelessWidget {
               final page = doc.pages[index];
               return Stack(
                 children: [
-                  Container(
-                    decoration: BoxDecoration(
-                      color: page.originalAssetColor,
-                      borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
-                      border: Border.all(color: Colors.black12),
-                    ),
+                  Positioned.fill(
+                    child: PageThumbnail(page: page, width: double.infinity, height: double.infinity),
                   ),
                   Positioned(
                     left: 6,
@@ -84,11 +88,11 @@ class PdfPreviewScreen extends StatelessWidget {
             spacing: AppSpacing.sm,
             runSpacing: AppSpacing.sm,
             children: [
-              _ActionChip(icon: Icons.add_rounded, label: 'Add page', onTap: () => context.push(AppRoutes.scan)),
-              _ActionChip(icon: Icons.edit_rounded, label: 'Edit page', onTap: () => context.push(AppRoutes.pages)),
-              _ActionChip(icon: Icons.rotate_right_rounded, label: 'Rotate', onTap: () {}),
-              _ActionChip(icon: Icons.swap_vert_rounded, label: 'Reorder', onTap: () => context.push(AppRoutes.pages)),
+              _ActionChip(icon: Icons.add_rounded, label: 'Add page', onTap: () => _editPages(context, doc, AppRoutes.scan)),
+              _ActionChip(icon: Icons.edit_rounded, label: 'Edit pages', onTap: () => _editPages(context, doc, AppRoutes.pages)),
+              _ActionChip(icon: Icons.swap_vert_rounded, label: 'Reorder', onTap: () => _editPages(context, doc, AppRoutes.pages)),
               _ActionChip(icon: Icons.text_snippet_rounded, label: 'OCR', onTap: () => context.push(AppRoutes.ocr, extra: doc)),
+              _ActionChip(icon: Icons.download_rounded, label: 'Download', onTap: () => _share(context, doc)),
               _ActionChip(
                 icon: Icons.delete_outline_rounded,
                 label: 'Delete',
@@ -111,6 +115,22 @@ class PdfPreviewScreen extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  void _editPages(BuildContext context, ScannedDocument doc, String route) {
+    context.read<ScanSessionProvider>().loadForEditing(doc.id, doc.pages);
+    context.push(route);
+  }
+
+  Future<void> _share(BuildContext context, ScannedDocument doc) async {
+    final path = doc.pdfPath;
+    if (path == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This document has no generated PDF file yet.')),
+      );
+      return;
+    }
+    await Share.shareXFiles([XFile(path)], text: doc.name);
   }
 
   void _rename(BuildContext context, ScannedDocument doc) {

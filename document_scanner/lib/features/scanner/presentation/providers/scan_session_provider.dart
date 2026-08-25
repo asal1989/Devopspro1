@@ -11,6 +11,12 @@ class ScanSessionProvider extends ChangeNotifier {
   final List<ScanPage> _pages = [];
   int? _activePageIndex;
 
+  /// Set while re-opening an already-saved document for editing (Add
+  /// page / Reorder / Edit page from the PDF Preview screen), so
+  /// finishing the flow updates that document instead of creating a
+  /// new one. Null for a brand new scan.
+  String? editingDocumentId;
+
   List<ScanPage> get pages => List.unmodifiable(_pages);
   int get pageCount => _pages.length;
   bool get isEmpty => _pages.isEmpty;
@@ -18,6 +24,15 @@ class ScanSessionProvider extends ChangeNotifier {
   ScanPage? get activePage =>
       _activePageIndex != null && _activePageIndex! < _pages.length ? _pages[_activePageIndex!] : null;
 
+  /// Adds a page captured (or imported) as a real image file on disk.
+  void capturePageFromFile(String imagePath) {
+    _pages.add(ScanPage(id: _uuid.v4(), originalImagePath: imagePath));
+    _activePageIndex = _pages.length - 1;
+    notifyListeners();
+  }
+
+  /// Adds a placeholder page with no real image — used only for demos
+  /// and previews where no camera/file is available.
   void capturePage(Color simulatedColor) {
     _pages.add(ScanPage(id: _uuid.v4(), originalAssetColor: simulatedColor));
     _activePageIndex = _pages.length - 1;
@@ -56,14 +71,27 @@ class ScanSessionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void replacePage(int index, Color simulatedColor) {
-    _pages[index] = ScanPage(id: _uuid.v4(), originalAssetColor: simulatedColor);
+  void replacePageWithFile(int index, String imagePath) {
+    _pages[index] = ScanPage(id: _uuid.v4(), originalImagePath: imagePath);
+    notifyListeners();
+  }
+
+  /// Loads an existing document's pages back into the session for
+  /// editing. [documentId] is remembered so the PDF creation step
+  /// updates that document instead of creating a new one.
+  void loadForEditing(String documentId, List<ScanPage> existingPages) {
+    _pages
+      ..clear()
+      ..addAll(existingPages);
+    _activePageIndex = _pages.isEmpty ? null : 0;
+    editingDocumentId = documentId;
     notifyListeners();
   }
 
   void reset() {
     _pages.clear();
     _activePageIndex = null;
+    editingDocumentId = null;
     notifyListeners();
   }
 }
