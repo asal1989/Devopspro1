@@ -5,14 +5,15 @@ Microsoft Lens / CamScanner, with an original UI. Built with Flutter using
 clean architecture so native scanning, OCR, and PDF pipelines can be
 dropped in without restructuring the app.
 
-This repository currently contains **Phases 1–5**: the full UI flow
+This repository currently contains **Phases 1–6**: the full UI flow
 (Phase 1), a real device camera with gallery import (Phase 2), real
 pixel-level image processing — perspective correction, rotation, and
 filters (Phase 3), real multi-page PDF generation, storage, and sharing
-(Phase 4), and real on-device OCR with SQLite-backed persistence
-(Phase 5). Cloud sync and AI features (Phases 6–7) are still
-UI-complete but simulated — see the phase sections below for exactly
-what's real versus mocked in each area.
+(Phase 4), real on-device OCR with SQLite-backed persistence (Phase 5),
+and real Google/email auth with an outbound cloud sync queue (Phase 6)
+— gated behind a Firebase project you provide (see section 8). AI
+features (Phase 7) are still UI-complete but simulated — see the phase
+sections below for exactly what's real versus mocked in each area.
 
 ---
 
@@ -63,12 +64,17 @@ and real persistence (Phase 5, `sqflite`) only meant adding
 | `share_plus` | Native share sheet for PDFs and extracted text (Phase 4–5) |
 | `sqflite` | Local document library persistence (Phase 5) |
 | `google_mlkit_text_recognition` | Real on-device OCR — Latin and Devanagari script models (Phase 5) |
+| `firebase_core` | Firebase SDK bootstrap (Phase 6) |
+| `firebase_auth` | Google + email/password sign-in (Phase 6) |
+| `google_sign_in` | Google account picker used by Firebase Auth's Google provider (Phase 6) |
+| `cloud_firestore` | Document metadata sync (Phase 6) |
+| `firebase_storage` | Generated PDF upload (Phase 6) |
 
 **Planned for later phases** (not added yet, so the app stays buildable
 today — add each when its phase starts):
 | Phase | Package(s) | Purpose |
 |---|---|---|
-| 6 — Cloud | `firebase_core`, `firebase_auth`, `cloud_firestore`, `firebase_storage` (or Supabase equivalents) | Auth, sync, cloud storage |
+| Apple Sign-In | `sign_in_with_apple` + Xcode capability/entitlement setup | Needs native iOS project config this repo doesn't have yet — see Phase 6 notes |
 | Security | `flutter_secure_storage` | Sensitive metadata at rest |
 | PDF encryption | TBD — needs SDK access to confirm the `pdf` package's current encryption API | Password-protected PDFs (currently captured in the UI but not enforced — see Phase 4 notes) |
 | OCR for Tamil/Kannada | TBD — a cloud OCR fallback (e.g. Cloud Vision), gated behind Premium | ML Kit's on-device recognizer has no Tamil/Kannada script model — see Phase 5 notes |
@@ -82,7 +88,8 @@ lib/
     theme/         app_theme.dart (light/dark ThemeData + semantic color extension)
     errors/        app_exception.dart (typed, user-facing failures)
     router/        app_router.dart (go_router routes + path constants)
-    utils/         (reserved for Phase 2+ formatters/helpers)
+    services/       FirebaseBootstrap (safe init), SyncCoordinator (app-level auth/settings/documents wiring — the one place `core/` intentionally depends on features, as the composition root)
+    utils/         (reserved for future formatters/helpers)
 
   features/
     home/presentation/            Dashboard: CTA, quick actions, recent docs
@@ -93,9 +100,9 @@ lib/
       presentation/screens/       Camera (real `camera` plugin), Crop, Enhancement (real live-processed preview), Page Manager
       presentation/widgets/       DetectionFramePainter
     documents/
-      domain/entities/            ScannedDocument (+ pdfPath), DocumentCategory
-      data/                       MockDocumentsRepository (demo seed), database/DocumentsDatabase (real sqflite persistence)
-      presentation/providers/     DocumentsProvider (library state, persists every mutation)
+      domain/entities/            ScannedDocument (+ pdfPath, updatedAt/syncedAt), DocumentCategory
+      data/                       MockDocumentsRepository (demo seed), database/DocumentsDatabase (real sqflite persistence + sync queue), sync/CloudSyncRepository + SyncService (real Firestore/Storage upload)
+      presentation/providers/     DocumentsProvider (library state, persists + reports every mutation), SyncStatusProvider (read-only sync status for the UI)
       presentation/screens/       Documents library (grid/list/search/sort)
       presentation/widgets/       DocumentGridItem
     pdf/
@@ -110,6 +117,9 @@ lib/
       presentation/providers/     SettingsProvider
       presentation/screens/       SettingsScreen
     authentication/
+      domain/entities/            AppUser
+      data/                       AuthService (real Firebase Auth: Google + email/password)
+      presentation/providers/     AuthProvider
       presentation/screens/       SignInScreen (optional)
 
   shared/widgets/                 PrimaryButton, SectionHeader, AppShell (bottom nav), PageThumbnail (real file or placeholder)
@@ -152,18 +162,26 @@ pages                            -- implemented
   contrast REAL
   sharpness REAL
 
-folders                          -- target, Phase 6
+folders                          -- still a target — no table yet
   id TEXT PRIMARY KEY
   name TEXT
   created_at INTEGER
 
-sync_queue                       -- target, Phase 6 (offline-first upload queue)
-  id TEXT PRIMARY KEY
-  document_id TEXT
+sync_queue                       -- implemented (Phase 6)
+  document_id TEXT PRIMARY KEY REFERENCES documents(id)
   status TEXT                    -- pending | uploading | failed
   retry_count INTEGER
   last_error TEXT NULL
 ```
+
+`documents` also gained `updated_at` and `synced_at` columns in schema
+version 2 (`DocumentsDatabase._createV2Additions`, with a real
+`onUpgrade` path — the "no migrations yet" gap flagged after Phase 5 is
+now the actual example of how migrations work here). `sync_queue` uses
+`document_id` as its primary key rather than a separate `id`, since a
+document only ever needs one pending upload at a time — a new local
+change just replaces the existing queue row instead of stacking up
+duplicate jobs.
 
 Every `DocumentsProvider` mutation updates the in-memory list first
 (so the UI never waits on disk I/O) and persists to SQLite in the
@@ -301,44 +319,96 @@ pure Dart via the `image` package, no OpenCV dependency:**
   `DocumentsProvider.updateDocument` on the same id instead of creating
   a duplicate document.
 
+## 8. Cloud sync & auth strategy (Phase 6 — implemented, gated on your Firebase project)
+
+**This phase needs a real Firebase project you provide** — Google/email
+sign-in and sync literally cannot work without one, so
+[`lib/firebase_options.dart`](lib/firebase_options.dart) ships as an
+intentional placeholder that throws a clear error instead of silently
+using fake credentials. See **Installation commands** below for the
+`flutterfire configure` step. Everything else in the app (scanning,
+editing, OCR, PDF, local library) works exactly the same whether or not
+this is ever configured — [`FirebaseBootstrap`](lib/core/services/firebase_bootstrap.dart)
+catches the init failure at startup and the app runs in local-only mode.
+
+- **Auth**: [`AuthService`](lib/features/authentication/data/auth_service.dart)
+  wraps `firebase_auth` + `google_sign_in` for real Google and
+  email/password sign-in and sign-up, mapped to a plain `AppUser` so no
+  screen touches the Firebase SDK directly. `AuthProvider` exposes
+  sign-in state as a `ChangeNotifier` via `authStateChanges`.
+  **Apple Sign-In is not implemented** — it needs an Xcode capability
+  and entitlements file added to the `ios/` project, which doesn't
+  exist in this repo yet (see Installation commands) and can't be
+  scaffolded headlessly; `SignInScreen`'s Apple button says so instead
+  of pretending to work.
+- **Sync direction — outbound only.** [`CloudSyncRepository`](lib/features/documents/data/sync/cloud_sync_repository.dart)
+  uploads a document's metadata to Firestore
+  (`users/{uid}/documents/{id}`) and its generated PDF to Storage
+  (`users/{uid}/documents/{id}.pdf`). It does **not** pull remote
+  changes back down or merge them — so two devices signed into the same
+  account will each upload their own local documents, but won't yet see
+  each other's. A real two-way sync (download + last-write-wins using
+  the new `updatedAt` field, or a proper CRDT/merge strategy) is future
+  work; this phase delivers the "back up what's local" half honestly
+  rather than a half-working merge that silently loses data.
+- **Offline queue + retry**: [`SyncService`](lib/features/documents/data/sync/sync_service.dart)
+  drains the `sync_queue` table — every document with local changes
+  newer than its last successful sync gets enqueued, uploaded, and
+  dequeued on success; a failed upload (offline, permission error,
+  whatever) stays queued with an incremented retry count and the error
+  message, surfaced in Settings' new **Sync Status** row with a
+  **Retry** button.
+- **When it runs**: [`SyncCoordinator`](lib/core/services/sync_coordinator.dart)
+  (instantiated once in `main.dart`) is the only place that decides
+  *when* to sync — on sign-in, on toggling Cloud Sync on, and after
+  every local document change — by listening to `AuthProvider` and
+  `SettingsProvider` and hooking `DocumentsProvider.onDocumentChanged`/
+  `onDocumentDeleted`. Cloud sync only ever fires when
+  `AuthProvider.isSignedIn && SettingsProvider.cloudSyncEnabled` are
+  both true; `DocumentsProvider` itself has zero compile-time knowledge
+  of auth or Firebase, so local-only usage is provably unaffected.
+- **Conflict resolution**: within this outbound-only scope, "conflict"
+  reduces to "is my local copy newer than what I last uploaded" —
+  `ScannedDocument.isSynced` compares `updatedAt` against `syncedAt` and
+  that's the whole policy. Real cross-device conflict resolution needs
+  the download half described above first.
+
 ---
 
-## Phases 1–5 (this delivery)
+## Phases 1–6 (this delivery)
 
-### Files created/modified since Phase 1
-New: `lib/features/scanner/data/image_processor.dart`,
-`lib/features/pdf/data/pdf_generator.dart`,
-`lib/features/ocr/data/ocr_service.dart`,
-`lib/features/documents/data/database/documents_database.dart`,
-`lib/shared/widgets/page_thumbnail.dart`. Modified: `ScannerCameraScreen`,
-`CropScreen`, `EnhancementScreen`, `PageManagerScreen`,
-`PdfCreateOptionsScreen`, `PdfPreviewScreen`, `OcrResultScreen`,
-`ScanSessionProvider`, `DocumentsProvider`, `ScanPage`,
-`ScannedDocument`, `pubspec.yaml`. See the folder structure and
-sections 5–7 above for what each does.
+### Files created/modified since Phase 5
+New: `lib/firebase_options.dart` (placeholder — see Installation
+commands), `lib/core/services/firebase_bootstrap.dart`,
+`lib/core/services/sync_coordinator.dart`,
+`lib/features/authentication/domain/entities/app_user.dart`,
+`lib/features/authentication/data/auth_service.dart`,
+`lib/features/authentication/presentation/providers/auth_provider.dart`,
+`lib/features/documents/data/sync/cloud_sync_repository.dart`,
+`lib/features/documents/data/sync/sync_service.dart`,
+`lib/features/documents/presentation/providers/sync_status_provider.dart`.
+Modified: `SignInScreen`, `SettingsScreen`, `SettingsProvider`,
+`DocumentsProvider`, `DocumentsDatabase` (v2 schema + sync queue),
+`ScannedDocument` (+ `updatedAt`/`syncedAt`), `main.dart`,
+`pubspec.yaml`. See the folder structure and section 8 above for what
+each does.
 
 ### What's implemented
-- Full navigation flow: Home → Scan → **real Camera** (live preview,
-  flash, camera switch, gallery import, manual + timer-approximated
-  auto capture) → Crop (draggable corners over the **real captured
-  image**) → Enhance (**real, live-processed** filters + brightness/
-  contrast/sharpness) → Page Manager (reorder/rotate/delete/replace,
-  now with real thumbnails) → PDF Create Options → **real PDF
-  generation** → PDF Preview (real thumbnails, real Share) → **real
-  on-device OCR** (extract, edit, copy, share, save as .txt).
-- Re-opening a saved document from PDF Preview ("Add page" / "Edit
-  pages" / "Reorder") correctly updates that same document rather than
-  creating a duplicate.
-- The document library now **survives an app restart**: every add/
-  rename/favorite/delete/duplicate/OCR-result goes through
-  `DocumentsProvider` into `sqflite`, not just an in-memory list.
-- Home dashboard, Documents library (grid/list, search, sort, favorites
-  filter), Settings (scanner defaults, appearance incl. working dark
-  mode, storage, account with optional sign-in, about).
-- Friendly, non-crashing error states for camera permission denial,
-  camera init failure, gallery import failure, PDF generation failure,
-  and OCR recognition failure (`core/constants/app_strings.dart` copy
-  from the spec).
+- Full navigation flow unchanged from Phase 5, plus: Settings → **Sign
+  In** (real Google or email/password auth) → Cloud Sync toggle → a
+  live **Sync Status** row (syncing / pending count / failed count with
+  Retry) that appears once signed in and synced on.
+- Every local document change (scan, edit, rename, favorite, OCR
+  result, delete) automatically queues and attempts a real upload to
+  Firestore + Storage whenever the user is signed in and Cloud Sync is
+  on — with zero effect on anyone who isn't (see section 8's "When it
+  runs").
+- The document library still **survives an app restart** exactly as in
+  Phase 5; sync layers on top of that without changing local behavior.
+- Friendly, non-crashing error states extend to sign-in/sign-up
+  (wrong password, email in use, offline, etc. — see `AuthService`'s
+  `_friendlyMessage`) and to sync failures (tracked per-document in the
+  queue, never surfaced as a crash or a lost document).
 
 ### Installation commands
 
@@ -355,6 +425,31 @@ Generate them once with:
 ```bash
 flutter create . --platforms=android,ios --org com.scanova.app
 ```
+
+**To enable Sign In and Cloud Sync**, you need a real Firebase project
+(everything else in the app works without this):
+
+1. Create a project at https://console.firebase.google.com.
+2. Enable **Authentication** → Sign-in method → Google and Email/Password.
+3. Enable **Firestore Database** and **Storage** (test mode is fine to
+   start; tighten the security rules — scoped to `users/{uid}/**` per
+   the paths in section 8 — before shipping).
+4. From the project root: `dart pub global activate flutterfire_cli`,
+   then `flutterfire configure` — pick the project you just created,
+   the platforms you scaffolded above, and it overwrites
+   `lib/firebase_options.dart` with real values (and drops
+   `google-services.json`/`GoogleService-Info.plist` into
+   `android/app/`/`ios/Runner/` for you).
+5. For Android's Google Sign-In specifically, add your debug (and
+   later release) SHA-1 fingerprint to the Firebase project's Android
+   app settings, or Google sign-in will fail with a
+   `DEVELOPER_ERROR`/`ApiException: 10` even with valid config —
+   `keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android`
+   gets you the debug fingerprint.
+
+Until those steps are done, `FirebaseBootstrap` catches the init
+failure and the app runs normally in local-only mode — Sign In shows a
+"Cloud sign-in is not set up yet" message instead of crashing.
 
 This preserves the existing `lib/`, `pubspec.yaml`, and `test/` — it
 only adds the native project shells. **After scaffolding**, add the
@@ -421,6 +516,20 @@ Manual walkthrough checklist:
 13. Toggle **Save Original Image** off in Settings, create another PDF,
     and confirm the original capture files are cleaned up afterward
     (the PDF itself is unaffected).
+14. **With a real Firebase project configured** (see Installation
+    commands): Settings → Sign In → Google or email/password. Confirm
+    the Account row shows your name/email, then toggle **Cloud Sync**
+    on and watch the new **Sync Status** row go "Syncing…" → "Up to
+    date". Create a new document and confirm it starts syncing
+    automatically. Check the Firebase console (Firestore + Storage) for
+    the uploaded metadata/PDF.
+15. Turn off WiFi/data, create or edit a document with Cloud Sync on —
+    confirm the app doesn't hang or crash, and Sync Status shows a
+    failed count with a **Retry** button; reconnect and tap Retry to
+    confirm it clears.
+16. Sign out — confirm Cloud Sync turns off and the Account row reverts
+    to "Not signed in", while every local document stays exactly as it
+    was (signing out never deletes local data).
 
 Performance note: the 1/10/50/100-page load testing called out in the
 spec has not been run here (no device/SDK available in this
@@ -436,33 +545,43 @@ profiled on a real mid-range device before shipping.
   section 7 above for exactly why and what's needed to finish it.
 - **Tamil and Kannada OCR fall back to the Latin recognizer** — ML Kit
   has no on-device model for either script; see section 6 above.
-- Cloud auth/sync and AI features (Phases 6–7) remain simulated;
-  unchanged from the Phase 1 delivery. `SignInScreen` and
-  `SettingsProvider.cloudSyncEnabled` are UI-complete but not connected
-  to a backend.
-- No database migrations exist yet — the schema in section 4 is
-  version 1 with no upgrade path. Fine while the app is pre-release;
-  add an `onUpgrade` callback in `DocumentsDatabase` before shipping a
-  schema change.
+- **Cloud sync is outbound-only (local → cloud), and needs your own
+  Firebase project** — see section 8 above for both the "why" and the
+  setup steps. Nothing else in the app depends on it.
+- **Apple Sign-In is not implemented** — needs Xcode entitlements this
+  repo can't scaffold headlessly; see section 8.
+- AI features (Phase 7) remain simulated; unchanged from the Phase 1
+  delivery.
+- Database migrations now have exactly one real example
+  (`DocumentsDatabase` v1→v2, adding `updated_at`/`synced_at` and
+  `sync_queue`) — the pattern exists, but it's only been exercised
+  going from v1, not tested against a v2 database that already has
+  real rows in it from actual use.
 - Folders and favorites-as-a-first-class-entity aren't real yet —
   `ScannedDocument.folder` is a free-text field with no `folders` table
   behind it (per section 4), and there's no UI to assign one yet.
 - `android/` and `ios/` platform folders are not included in this
   commit — see Installation commands above for the one-time scaffold
-  step and the manifest/plist permissions to add afterward.
+  step, the manifest/plist permissions, and the Firebase setup to add
+  afterward.
 - None of this has been run through `flutter analyze`/`flutter test`/a
   real device in this environment (no Flutter SDK installed here). The
-  camera, image-processing, PDF, OCR, and SQLite code paths in
-  particular need verification on a real device before shipping —
+  camera, image-processing, PDF, OCR, SQLite, auth, and sync code paths
+  in particular need verification on a real device before shipping —
   review with those commands and the manual walkthrough above first.
-  Two specific package details couldn't be verified without SDK/docs
-  access and are worth double-checking first: the
-  `TextRecognitionScript.devanagiri` enum spelling (`OcrService`) and
-  the `pw.MemoryImage.width`/`.height` getters (`PdfGenerator`).
+  Package details that couldn't be verified without SDK/docs access and
+  are worth double-checking first: the
+  `TextRecognitionScript.devanagiri` enum spelling (`OcrService`), the
+  `pw.MemoryImage.width`/`.height` getters (`PdfGenerator`), and the
+  `google_sign_in: ^6.2.1` interactive `signIn()` API surface used in
+  `AuthService` (a major-version redesign of that package's API exists
+  upstream; pin/verify before upgrading).
 
 ### Next phase
-**Phase 6 — Cloud**: wire `SignInScreen` to real Google/Apple/email
-auth (Firebase Auth or Supabase), and give `DocumentsProvider` a sync
-layer — upload queue, retry, and conflict resolution — that activates
-only once a user is signed in, keeping local-first behavior unchanged
-for everyone else.
+**Phase 7 — AI features**: document summarization, "ask a question
+about this document," smart classification, and structured extraction
+(invoice/receipt fields, names/dates/amounts) — most naturally layered
+on top of the real OCR text `OcrService` already produces, calling out
+to an LLM API behind a `Premium`-gated interface per the monetization
+plan. Natural-language document search over the (still local-only)
+library rounds it out.

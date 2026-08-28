@@ -22,6 +22,17 @@ class DocumentsProvider extends ChangeNotifier {
   final List<ScannedDocument> _documents = [];
   bool _isReady = false;
 
+  /// Fired after any add/update/rename/favorite/duplicate/OCR-result
+  /// change, with the resulting document. Wired up in `main.dart` by
+  /// `SyncCoordinator` to enqueue an upload when the user is signed in
+  /// with Cloud Sync on — left null (no-op) otherwise, so this provider
+  /// has no compile-time dependency on auth or sync.
+  void Function(ScannedDocument document)? onDocumentChanged;
+
+  /// Fired after a document is deleted locally, so the coordinator can
+  /// best-effort remove the remote copy too.
+  void Function(String documentId)? onDocumentDeleted;
+
   DocumentsProvider({MockDocumentsRepository? mockRepository, DocumentsDatabase? database})
       : _mockRepository = mockRepository ?? MockDocumentsRepository(),
         _database = database ?? DocumentsDatabase.instance {
@@ -97,10 +108,12 @@ class DocumentsProvider extends ChangeNotifier {
     _documents.insert(0, document);
     notifyListeners();
     _persist(document);
+    onDocumentChanged?.call(document);
   }
 
   /// Replaces an existing document in place (same id), used when a
-  /// saved document is re-opened for editing and re-saved.
+  /// saved document is re-opened for editing and re-saved, and by
+  /// `SyncService` to record a successful upload.
   void updateDocument(ScannedDocument document) {
     final index = _documents.indexWhere((d) => d.id == document.id);
     if (index == -1) {
@@ -110,6 +123,7 @@ class DocumentsProvider extends ChangeNotifier {
     }
     notifyListeners();
     _persist(document);
+    onDocumentChanged?.call(document);
   }
 
   void toggleFavorite(String id) {
@@ -118,6 +132,7 @@ class DocumentsProvider extends ChangeNotifier {
     _documents[index] = _documents[index].copyWith(isFavorite: !_documents[index].isFavorite);
     notifyListeners();
     _persist(_documents[index]);
+    onDocumentChanged?.call(_documents[index]);
   }
 
   void rename(String id, String newName) {
@@ -126,6 +141,7 @@ class DocumentsProvider extends ChangeNotifier {
     _documents[index] = _documents[index].copyWith(name: newName);
     notifyListeners();
     _persist(_documents[index]);
+    onDocumentChanged?.call(_documents[index]);
   }
 
   /// Sets extracted OCR text on a document and persists it, so re-opening
@@ -136,12 +152,14 @@ class DocumentsProvider extends ChangeNotifier {
     _documents[index] = _documents[index].copyWith(extractedText: text);
     notifyListeners();
     _persist(_documents[index]);
+    onDocumentChanged?.call(_documents[index]);
   }
 
   void delete(String id) {
     _documents.removeWhere((d) => d.id == id);
     notifyListeners();
     _remove(id);
+    onDocumentDeleted?.call(id);
   }
 
   void duplicate(String id) {
@@ -162,5 +180,6 @@ class DocumentsProvider extends ChangeNotifier {
     _documents.insert(0, copy);
     notifyListeners();
     _persist(copy);
+    onDocumentChanged?.call(copy);
   }
 }

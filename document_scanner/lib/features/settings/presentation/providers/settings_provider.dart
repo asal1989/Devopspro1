@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
 
-/// App-wide user preferences. Held in memory for Phase 1; a later phase
-/// persists this via SQLite/shared_preferences behind the same API.
+/// App-wide user preferences. Held in memory for now; a later pass
+/// persists this via shared_preferences behind the same API.
+///
+/// Sign-in state itself lives in `AuthProvider`, not here — this only
+/// tracks whether the user has *opted in* to cloud sync, which is a
+/// preference independent of being signed in (Settings disables the
+/// toggle when signed out; see `SettingsScreen`).
 class SettingsProvider extends ChangeNotifier {
   ThemeMode themeMode = ThemeMode.system;
   bool autoCapture = true;
@@ -10,8 +15,6 @@ class SettingsProvider extends ChangeNotifier {
   bool autoOcr = false;
   bool saveOriginalImage = true;
   bool cloudSyncEnabled = false;
-  bool isSignedIn = false;
-  String? userEmail;
 
   void setThemeMode(ThemeMode mode) {
     themeMode = mode;
@@ -48,15 +51,10 @@ class SettingsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void signIn(String email) {
-    isSignedIn = true;
-    userEmail = email;
-    notifyListeners();
-  }
-
-  void signOut() {
-    isSignedIn = false;
-    userEmail = null;
+  /// Called by `AuthProvider`-driven sign-out flows so re-signing-in
+  /// later starts from a clean slate rather than resuming a stale sync
+  /// preference for a different account.
+  void resetCloudSync() {
     cloudSyncEnabled = false;
     notifyListeners();
   }

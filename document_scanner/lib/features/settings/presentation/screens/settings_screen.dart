@@ -4,7 +4,10 @@ import 'package:provider/provider.dart';
 
 import '../../../../core/constants/app_spacing.dart';
 import '../../../../core/router/app_router.dart';
+import '../../../../core/services/sync_coordinator.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../authentication/presentation/providers/auth_provider.dart';
+import '../../../documents/presentation/providers/sync_status_provider.dart';
 import '../providers/settings_provider.dart';
 
 /// Scanner defaults, appearance, storage, account, and about — grouped
@@ -15,6 +18,8 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
+    final auth = context.watch<AuthProvider>();
+    final syncStatus = context.watch<SyncStatusProvider>();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.md, AppSpacing.md, 120),
@@ -98,22 +103,26 @@ class SettingsScreen extends StatelessWidget {
         _SettingsCard(children: [
           ListTile(
             leading: const Icon(Icons.person_rounded),
-            title: Text(settings.isSignedIn ? (settings.userEmail ?? 'Signed in') : 'Not signed in'),
-            subtitle: Text(settings.isSignedIn ? 'Tap to view profile' : 'Sign in for cloud backup'),
-            trailing: settings.isSignedIn ? null : const Icon(Icons.chevron_right_rounded),
-            onTap: settings.isSignedIn ? null : () => context.push(AppRoutes.signIn),
+            title: Text(auth.isSignedIn ? (auth.user?.displayName ?? auth.user?.email ?? 'Signed in') : 'Not signed in'),
+            subtitle: Text(auth.isSignedIn ? (auth.user?.email ?? '') : 'Sign in for cloud backup'),
+            trailing: auth.isSignedIn ? null : const Icon(Icons.chevron_right_rounded),
+            onTap: auth.isSignedIn ? null : () => context.push(AppRoutes.signIn),
           ),
           SwitchListTile(
             title: const Text('Cloud Sync'),
-            subtitle: Text(settings.isSignedIn ? 'Keep documents backed up' : 'Sign in to enable'),
+            subtitle: Text(auth.isSignedIn ? 'Keep documents backed up' : 'Sign in to enable'),
             value: settings.cloudSyncEnabled,
-            onChanged: settings.isSignedIn ? settings.toggleCloudSync : null,
+            onChanged: auth.isSignedIn ? settings.toggleCloudSync : null,
           ),
-          if (settings.isSignedIn)
+          if (auth.isSignedIn && settings.cloudSyncEnabled) _SyncStatusTile(status: syncStatus),
+          if (auth.isSignedIn)
             ListTile(
               leading: const Icon(Icons.logout_rounded),
               title: const Text('Sign Out'),
-              onTap: settings.signOut,
+              onTap: () async {
+                await context.read<AuthProvider>().signOut();
+                if (context.mounted) settings.resetCloudSync();
+              },
             ),
         ]),
 
@@ -125,6 +134,45 @@ class SettingsScreen extends StatelessWidget {
           ListTile(title: Text('Version'), trailing: Text('0.1.0', style: TextStyle(fontWeight: FontWeight.w600))),
         ]),
       ],
+    );
+  }
+}
+
+class _SyncStatusTile extends StatelessWidget {
+  final SyncStatusProvider status;
+  const _SyncStatusTile({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final semantic = Theme.of(context).extension<AppSemanticColors>();
+    final hasFailures = status.failedCount > 0;
+
+    String label;
+    if (status.isSyncing) {
+      label = 'Syncing…';
+    } else if (hasFailures) {
+      label = '${status.failedCount} upload${status.failedCount == 1 ? '' : 's'} failed';
+    } else if (status.pendingCount > 0) {
+      label = '${status.pendingCount} pending';
+    } else {
+      label = 'Up to date';
+    }
+
+    return ListTile(
+      leading: status.isSyncing
+          ? const SizedBox(width: 22, height: 22, child: Padding(padding: EdgeInsets.all(2), child: CircularProgressIndicator(strokeWidth: 2)))
+          : Icon(
+              hasFailures ? Icons.error_outline_rounded : Icons.cloud_done_rounded,
+              color: hasFailures ? semantic?.danger : semantic?.success,
+            ),
+      title: const Text('Sync Status'),
+      subtitle: Text(label),
+      trailing: hasFailures
+          ? TextButton(
+              onPressed: () => context.read<SyncCoordinator>().retry(),
+              child: const Text('Retry'),
+            )
+          : null,
     );
   }
 }
