@@ -1,23 +1,62 @@
 import 'package:flutter/material.dart';
 
+import '../../data/database/documents_database.dart';
 import '../../data/mock_documents_repository.dart';
 import '../../domain/entities/document.dart';
 
 enum DocumentSort { newest, oldest, name, size }
 
-/// Holds the in-memory document library for this session.
+/// Holds the document library and keeps it in sync with SQLite.
 ///
-/// Backed by mock data in Phase 1; a real implementation later swaps
-/// [MockDocumentsRepository] for a SQLite-backed repository behind the
-/// same interface, so screens don't change.
+/// On startup this loads whatever is already persisted; on a fresh
+/// install (nothing in the database yet) it shows the mock sample
+/// documents as demo content without writing them to disk, so a first
+/// real save doesn't leave stale demo rows behind. Every mutation after
+/// that is applied to the in-memory list immediately (so the UI never
+/// waits on disk I/O) and persisted to [DocumentsDatabase] in the
+/// background — a failed write never corrupts in-memory state or
+/// crashes the app, matching the "storage failure" requirement.
 class DocumentsProvider extends ChangeNotifier {
-  final MockDocumentsRepository _repository;
-  final List<ScannedDocument> _documents;
+  final MockDocumentsRepository _mockRepository;
+  final DocumentsDatabase _database;
+  final List<ScannedDocument> _documents = [];
+  bool _isReady = false;
 
-  DocumentsProvider({MockDocumentsRepository? repository})
-      : _repository = repository ?? MockDocumentsRepository(),
-        _documents = [] {
-    _documents.addAll(_repository.loadSampleDocuments());
+  DocumentsProvider({MockDocumentsRepository? mockRepository, DocumentsDatabase? database})
+      : _mockRepository = mockRepository ?? MockDocumentsRepository(),
+        _database = database ?? DocumentsDatabase.instance {
+    _bootstrap();
+  }
+
+  /// True once the initial load from disk has finished. Screens don't
+  /// need to gate on this — mock demo content is shown immediately
+  /// while the real load happens — but it's exposed for anything that
+  /// wants to know (e.g. a future "syncing…" indicator).
+  bool get isReady => _isReady;
+
+  Future<void> _bootstrap() async {
+    try {
+      final stored = await _database.loadAll();
+      if (stored.isEmpty) {
+        _documents.addAll(_mockRepository.loadSampleDocuments());
+      } else {
+        _documents.addAll(stored);
+      }
+    } catch (_) {
+      _documents.addAll(_mockRepository.loadSampleDocuments());
+    }
+    _isReady = true;
+    notifyListeners();
+  }
+
+  void _persist(ScannedDocument document) {
+    // ignore: unawaited_futures
+    _database.upsert(document).catchError((_) {});
+  }
+
+  void _remove(String id) {
+    // ignore: unawaited_futures
+    _database.delete(id).catchError((_) {});
   }
 
   List<ScannedDocument> get all => List.unmodifiable(_documents);
@@ -57,6 +96,7 @@ class DocumentsProvider extends ChangeNotifier {
   void addDocument(ScannedDocument document) {
     _documents.insert(0, document);
     notifyListeners();
+    _persist(document);
   }
 
   /// Replaces an existing document in place (same id), used when a
@@ -69,6 +109,7 @@ class DocumentsProvider extends ChangeNotifier {
       _documents[index] = document;
     }
     notifyListeners();
+    _persist(document);
   }
 
   void toggleFavorite(String id) {
@@ -76,6 +117,7 @@ class DocumentsProvider extends ChangeNotifier {
     if (index == -1) return;
     _documents[index] = _documents[index].copyWith(isFavorite: !_documents[index].isFavorite);
     notifyListeners();
+    _persist(_documents[index]);
   }
 
   void rename(String id, String newName) {
@@ -83,30 +125,42 @@ class DocumentsProvider extends ChangeNotifier {
     if (index == -1) return;
     _documents[index] = _documents[index].copyWith(name: newName);
     notifyListeners();
+    _persist(_documents[index]);
+  }
+
+  /// Sets extracted OCR text on a document and persists it, so re-opening
+  /// the document later doesn't need to re-run recognition.
+  void setExtractedText(String id, String text) {
+    final index = _documents.indexWhere((d) => d.id == id);
+    if (index == -1) return;
+    _documents[index] = _documents[index].copyWith(extractedText: text);
+    notifyListeners();
+    _persist(_documents[index]);
   }
 
   void delete(String id) {
     _documents.removeWhere((d) => d.id == id);
     notifyListeners();
+    _remove(id);
   }
 
   void duplicate(String id) {
     final index = _documents.indexWhere((d) => d.id == id);
     if (index == -1) return;
     final source = _documents[index];
-    _documents.insert(
-      0,
-      ScannedDocument(
-        id: '${source.id}-copy-${DateTime.now().millisecondsSinceEpoch}',
-        name: '${source.name} (Copy)',
-        pages: source.pages,
-        createdAt: DateTime.now(),
-        sizeInKb: source.sizeInKb,
-        category: source.category,
-        thumbnailColor: source.thumbnailColor,
-        extractedText: source.extractedText,
-      ),
+    final copy = ScannedDocument(
+      id: '${source.id}-copy-${DateTime.now().millisecondsSinceEpoch}',
+      name: '${source.name} (Copy)',
+      pages: source.pages,
+      createdAt: DateTime.now(),
+      sizeInKb: source.sizeInKb,
+      category: source.category,
+      thumbnailColor: source.thumbnailColor,
+      extractedText: source.extractedText,
+      pdfPath: source.pdfPath,
     );
+    _documents.insert(0, copy);
     notifyListeners();
+    _persist(copy);
   }
 }

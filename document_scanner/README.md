@@ -5,13 +5,14 @@ Microsoft Lens / CamScanner, with an original UI. Built with Flutter using
 clean architecture so native scanning, OCR, and PDF pipelines can be
 dropped in without restructuring the app.
 
-This repository currently contains **Phases 1–4**: the full UI flow
+This repository currently contains **Phases 1–5**: the full UI flow
 (Phase 1), a real device camera with gallery import (Phase 2), real
 pixel-level image processing — perspective correction, rotation, and
-filters (Phase 3), and real multi-page PDF generation, storage, and
-sharing (Phase 4). OCR, cloud sync, and AI features (Phases 5–7) are
-still UI-complete but simulated — see the phase sections below for
-exactly what's real versus mocked in each area.
+filters (Phase 3), real multi-page PDF generation, storage, and sharing
+(Phase 4), and real on-device OCR with SQLite-backed persistence
+(Phase 5). Cloud sync and AI features (Phases 6–7) are still
+UI-complete but simulated — see the phase sections below for exactly
+what's real versus mocked in each area.
 
 ---
 
@@ -33,12 +34,15 @@ business logic lives in provider classes, not widgets.
 constants live in `core/router/app_router.dart` — no screen hard-codes a
 path string.
 
-**Why this shape scales:** the Scanner, OCR, and PDF features are already
-separated by responsibility. When Phase 2 adds the `camera` plugin, only
-`features/scanner/data` and the camera screen's internals change — the
-crop/enhance/page-manager screens keep consuming the same
-`ScanSessionProvider` API. Same for OCR (ML Kit) and PDF (`pdf`/`printing`
-packages) in later phases.
+**Why this shape scales:** the Scanner, OCR, Documents, and PDF features
+are separated by responsibility, each with its own `data` layer behind
+a small interface. That's why adding the `camera` plugin (Phase 2) only
+touched `features/scanner/data` and the camera screen's internals —
+crop/enhance/page-manager kept consuming the same `ScanSessionProvider`
+API — and why adding real OCR (Phase 5, `google_mlkit_text_recognition`)
+and real persistence (Phase 5, `sqflite`) only meant adding
+`OcrService` and `DocumentsDatabase` behind the existing
+`DocumentsProvider`/`OcrResultScreen` surface, with no screen rewrites.
 
 ## 2. Required packages
 
@@ -55,18 +59,19 @@ packages) in later phases.
 | `permission_handler` | Camera permission request + friendly denial UI (Phase 2) |
 | `image` | Pixel-level perspective warp, filters, brightness/contrast/sharpen (Phase 3) |
 | `pdf` | Real multi-page PDF composition (Phase 4) |
-| `path_provider` | Where captures and generated PDFs are written on disk (Phase 4) |
-| `share_plus` | Native share sheet for the generated PDF (Phase 4) |
+| `path_provider` | Where captures, generated PDFs, and the SQLite file live on disk (Phases 4–5) |
+| `share_plus` | Native share sheet for PDFs and extracted text (Phase 4–5) |
+| `sqflite` | Local document library persistence (Phase 5) |
+| `google_mlkit_text_recognition` | Real on-device OCR — Latin and Devanagari script models (Phase 5) |
 
 **Planned for later phases** (not added yet, so the app stays buildable
 today — add each when its phase starts):
 | Phase | Package(s) | Purpose |
 |---|---|---|
-| 5 — OCR | `google_mlkit_text_recognition` | On-device OCR (English, Hindi, Tamil, Kannada via script-specific recognizers) |
-| 5 — Local storage | `sqflite` | Offline document/OCR metadata store, replacing the in-memory `DocumentsProvider` |
 | 6 — Cloud | `firebase_core`, `firebase_auth`, `cloud_firestore`, `firebase_storage` (or Supabase equivalents) | Auth, sync, cloud storage |
 | Security | `flutter_secure_storage` | Sensitive metadata at rest |
 | PDF encryption | TBD — needs SDK access to confirm the `pdf` package's current encryption API | Password-protected PDFs (currently captured in the UI but not enforced — see Phase 4 notes) |
+| OCR for Tamil/Kannada | TBD — a cloud OCR fallback (e.g. Cloud Vision), gated behind Premium | ML Kit's on-device recognizer has no Tamil/Kannada script model — see Phase 5 notes |
 
 ## 3. Folder structure
 
@@ -89,8 +94,8 @@ lib/
       presentation/widgets/       DetectionFramePainter
     documents/
       domain/entities/            ScannedDocument (+ pdfPath), DocumentCategory
-      data/                       MockDocumentsRepository
-      presentation/providers/     DocumentsProvider (library state)
+      data/                       MockDocumentsRepository (demo seed), database/DocumentsDatabase (real sqflite persistence)
+      presentation/providers/     DocumentsProvider (library state, persists every mutation)
       presentation/screens/       Documents library (grid/list/search/sort)
       presentation/widgets/       DocumentGridItem
     pdf/
@@ -99,6 +104,7 @@ lib/
       presentation/screens/       PdfCreateOptionsScreen, PdfPreviewScreen (real Share via `share_plus`)
     ocr/
       domain/entities/            OcrLanguage
+      data/                       OcrService (real Google ML Kit on-device recognition)
       presentation/screens/       OcrResultScreen
     settings/
       presentation/providers/     SettingsProvider
@@ -110,49 +116,64 @@ lib/
   main.dart                       Provider wiring + MaterialApp.router
 ```
 
-## 4. Database structure (target — Phase 5)
+## 4. Database structure (Phase 5 — `documents`/`pages` implemented)
 
-Local storage moves from in-memory `DocumentsProvider` to `sqflite`
-behind the same repository interface:
+[`DocumentsDatabase`](lib/features/documents/data/database/documents_database.dart)
+implements the `documents` and `pages` tables below with `sqflite`,
+behind the same small surface (`loadAll`/`upsert`/`delete`) so
+`DocumentsProvider` never touches SQL directly. `folders` and
+`sync_queue` are modeled here as the Phase 6 target — folders aren't a
+real entity yet (`ScannedDocument.folder` is a free-text field with no
+table behind it), and there is no cloud sync to queue for yet.
 
 ```
-documents
+documents                        -- implemented
   id TEXT PRIMARY KEY
   name TEXT
   created_at INTEGER
-  updated_at INTEGER
-  folder_id TEXT NULL
+  folder TEXT NULL                -- free-text for now; see folders below
   is_favorite INTEGER
   size_kb INTEGER
   category TEXT
   extracted_text TEXT NULL
-  pdf_path TEXT
-  synced_at INTEGER NULL        -- null until cloud-synced
+  pdf_path TEXT NULL
+  thumbnail_color INTEGER         -- ARGB int, Phase 1 placeholder color
 
-pages
+pages                            -- implemented
   id TEXT PRIMARY KEY
   document_id TEXT REFERENCES documents(id) ON DELETE CASCADE
   position INTEGER
-  original_image_path TEXT
-  processed_image_path TEXT
+  original_image_path TEXT NULL
+  original_color INTEGER          -- ARGB int placeholder, mirrors ScanPage.originalAssetColor
+  crop_corners TEXT NULL          -- JSON-encoded [[x,y],[x,y],[x,y],[x,y]], normalized 0..1
   rotation_degrees INTEGER
   filter TEXT
   brightness REAL
   contrast REAL
   sharpness REAL
 
-folders
+folders                          -- target, Phase 6
   id TEXT PRIMARY KEY
   name TEXT
   created_at INTEGER
 
-sync_queue                       -- offline-first upload queue (Phase 6)
+sync_queue                       -- target, Phase 6 (offline-first upload queue)
   id TEXT PRIMARY KEY
   document_id TEXT
   status TEXT                    -- pending | uploading | failed
   retry_count INTEGER
   last_error TEXT NULL
 ```
+
+Every `DocumentsProvider` mutation updates the in-memory list first
+(so the UI never waits on disk I/O) and persists to SQLite in the
+background afterward; a failed write is swallowed rather than
+propagated, so a storage hiccup never corrupts the in-memory state or
+crashes the app. On first launch (empty database), the library shows
+the mock sample documents as demo content without writing them to
+disk — they only become persisted rows once the user actually
+interacts with one (favorite, rename, etc.), so a fresh install never
+leaves stale demo rows behind once real documents exist.
 
 `ScanPage` now carries a real `originalImagePath` (set by the camera or
 gallery import) alongside `originalAssetColor`, which remains only as a
@@ -208,24 +229,34 @@ pure Dart via the `image` package, no OpenCV dependency:**
    `maxWorkingDimension` of 2200px for responsiveness on mid-range
    phones.
 
-## 6. OCR implementation strategy (Phase 5 — not yet implemented)
+## 6. OCR implementation strategy (Phase 5 — implemented)
 
-- Use `google_mlkit_text_recognition` for on-device OCR — works fully
+- [`OcrService`](lib/features/ocr/data/ocr_service.dart) wraps
+  `google_mlkit_text_recognition` for real on-device OCR — works fully
   offline, satisfying the "no internet required" requirement.
-- English, Hindi, and other Latin/Devanagari-adjacent scripts use the
-  default Latin recognizer; Tamil and Kannada need ML Kit's
-  script-specific recognizer options where supported, or a fallback
-  cloud OCR call (e.g. Google Cloud Vision) gated behind "Premium" for
-  scripts the on-device model doesn't cover well — this is why
-  `OcrLanguage` is already modeled as an explicit enum rather than a
-  free-text field.
-- OCR runs in a background isolate per page; results are cached on the
-  `ScannedDocument.extractedText` field (already present) so re-opening
-  a document doesn't re-run recognition.
-- Failures never crash the app: wrap recognition in
-  `core/errors/app_exception.dart`'s `OcrException` and show
-  `AppStrings.ocrFailure` ("We couldn't recognize the text. Try a
-  clearer scan.").
+- English uses ML Kit's Latin script recognizer; Hindi uses the
+  Devanagari recognizer. **Tamil and Kannada are not among ML Kit's
+  on-device script models**, so they currently fall back to the Latin
+  recognizer — usable for mixed-script/numeric content but not a real
+  Tamil/Kannada model. `OcrResultScreen` says so directly under the
+  language picker rather than silently under-delivering. A cloud OCR
+  fallback (e.g. Google Cloud Vision), gated behind Premium, is the
+  planned fix — see the packages table in section 2.
+- `OcrResultScreen` runs recognition across every real page image
+  (`recognizeDocument`) and joins the results into one transcript; for
+  documents with no real captured image (Phase 1 demo docs), it shows
+  explanatory placeholder copy instead of failing. Results are cached
+  via `DocumentsProvider.setExtractedText`, which persists to SQLite, so
+  re-opening a document doesn't need to re-run recognition.
+- Recognition calls go through ML Kit's own platform channel, which is
+  already async and off the UI thread on the native side — no manual
+  isolate wrapping needed (and `compute()` isn't a good fit here since a
+  spawned isolate can't use platform channels without extra setup).
+- Failures never crash the app: `OcrService.recognizePage` wraps ML Kit
+  exceptions in `core/errors/app_exception.dart`'s `OcrException`, and
+  `OcrResultScreen` catches it and shows `AppStrings.ocrFailure`
+  ("We couldn't recognize the text. Try a clearer scan.") instead of a
+  blank or broken screen.
 
 ## 7. PDF implementation strategy (Phase 4 — implemented)
 
@@ -272,16 +303,19 @@ pure Dart via the `image` package, no OpenCV dependency:**
 
 ---
 
-## Phases 1–4 (this delivery)
+## Phases 1–5 (this delivery)
 
 ### Files created/modified since Phase 1
 New: `lib/features/scanner/data/image_processor.dart`,
 `lib/features/pdf/data/pdf_generator.dart`,
+`lib/features/ocr/data/ocr_service.dart`,
+`lib/features/documents/data/database/documents_database.dart`,
 `lib/shared/widgets/page_thumbnail.dart`. Modified: `ScannerCameraScreen`,
 `CropScreen`, `EnhancementScreen`, `PageManagerScreen`,
-`PdfCreateOptionsScreen`, `PdfPreviewScreen`, `ScanSessionProvider`,
-`DocumentsProvider`, `ScanPage`, `ScannedDocument`, `pubspec.yaml`. See
-the folder structure and sections 5–7 above for what each does.
+`PdfCreateOptionsScreen`, `PdfPreviewScreen`, `OcrResultScreen`,
+`ScanSessionProvider`, `DocumentsProvider`, `ScanPage`,
+`ScannedDocument`, `pubspec.yaml`. See the folder structure and
+sections 5–7 above for what each does.
 
 ### What's implemented
 - Full navigation flow: Home → Scan → **real Camera** (live preview,
@@ -290,17 +324,21 @@ the folder structure and sections 5–7 above for what each does.
   image**) → Enhance (**real, live-processed** filters + brightness/
   contrast/sharpness) → Page Manager (reorder/rotate/delete/replace,
   now with real thumbnails) → PDF Create Options → **real PDF
-  generation** → PDF Preview (real thumbnails, real Share) → OCR result
-  screen (still simulated — Phase 5).
+  generation** → PDF Preview (real thumbnails, real Share) → **real
+  on-device OCR** (extract, edit, copy, share, save as .txt).
 - Re-opening a saved document from PDF Preview ("Add page" / "Edit
   pages" / "Reorder") correctly updates that same document rather than
   creating a duplicate.
+- The document library now **survives an app restart**: every add/
+  rename/favorite/delete/duplicate/OCR-result goes through
+  `DocumentsProvider` into `sqflite`, not just an in-memory list.
 - Home dashboard, Documents library (grid/list, search, sort, favorites
   filter), Settings (scanner defaults, appearance incl. working dark
   mode, storage, account with optional sign-in, about).
 - Friendly, non-crashing error states for camera permission denial,
-  camera init failure, gallery import failure, and PDF generation
-  failure (`core/constants/app_strings.dart` copy from the spec).
+  camera init failure, gallery import failure, PDF generation failure,
+  and OCR recognition failure (`core/constants/app_strings.dart` copy
+  from the spec).
 
 ### Installation commands
 
@@ -371,8 +409,16 @@ Manual walkthrough checklist:
 9. From Documents (or Home's Recent Documents), open that document
    again and tap **Add page** — confirm it updates the same card
    instead of creating a second one.
-10. Toggle Dark Mode in Settings and confirm every screen re-themes.
-11. Toggle **Save Original Image** off in Settings, create another PDF,
+10. On PDF Preview, tap **Extract Text** — confirm real recognized text
+    appears (not placeholder copy) for a document with a real scanned
+    page, and that switching the language chip re-runs recognition. Try
+    **Copy**, **Share**, and **Save TXT**.
+11. **Force-quit and relaunch the app** — confirm any document you
+    created is still in Documents/Recent Documents (this is the real
+    persistence test; Phase 1's mock demo docs reappear too until you've
+    interacted with real ones).
+12. Toggle Dark Mode in Settings and confirm every screen re-themes.
+13. Toggle **Save Original Image** off in Settings, create another PDF,
     and confirm the original capture files are cleaned up afterward
     (the PDF itself is unaffected).
 
@@ -385,26 +431,38 @@ profiled on a real mid-range device before shipping.
 ### Known limitations
 - **True document-edge detection is still simulated** — see section 5
   above. Everything downstream of a capture (crop, perspective
-  correction, filters, PDF) is real.
+  correction, filters, PDF, OCR) is real.
 - **PDF password protection is captured but not enforced** — see
   section 7 above for exactly why and what's needed to finish it.
-- OCR, cloud auth/sync, and AI features (Phases 5–7) remain simulated;
-  unchanged from the Phase 1 delivery.
-- No persistence: closing the app loses the document library
-  (`DocumentsProvider` is in-memory) — generated PDF *files* do persist
-  on disk via `path_provider`, but the app won't know about them after
-  a restart until Phase 5 adds SQLite-backed storage.
+- **Tamil and Kannada OCR fall back to the Latin recognizer** — ML Kit
+  has no on-device model for either script; see section 6 above.
+- Cloud auth/sync and AI features (Phases 6–7) remain simulated;
+  unchanged from the Phase 1 delivery. `SignInScreen` and
+  `SettingsProvider.cloudSyncEnabled` are UI-complete but not connected
+  to a backend.
+- No database migrations exist yet — the schema in section 4 is
+  version 1 with no upgrade path. Fine while the app is pre-release;
+  add an `onUpgrade` callback in `DocumentsDatabase` before shipping a
+  schema change.
+- Folders and favorites-as-a-first-class-entity aren't real yet —
+  `ScannedDocument.folder` is a free-text field with no `folders` table
+  behind it (per section 4), and there's no UI to assign one yet.
 - `android/` and `ios/` platform folders are not included in this
   commit — see Installation commands above for the one-time scaffold
   step and the manifest/plist permissions to add afterward.
 - None of this has been run through `flutter analyze`/`flutter test`/a
   real device in this environment (no Flutter SDK installed here). The
-  camera, image-processing, and PDF code paths in particular need
-  verification on a real device before shipping — review with those
-  commands and the manual walkthrough above first.
+  camera, image-processing, PDF, OCR, and SQLite code paths in
+  particular need verification on a real device before shipping —
+  review with those commands and the manual walkthrough above first.
+  Two specific package details couldn't be verified without SDK/docs
+  access and are worth double-checking first: the
+  `TextRecognitionScript.devanagiri` enum spelling (`OcrService`) and
+  the `pw.MemoryImage.width`/`.height` getters (`PdfGenerator`).
 
 ### Next phase
-**Phase 5 — OCR & local storage**: integrate
-`google_mlkit_text_recognition` for real on-device text extraction
-(replacing the simulated `OcrResultScreen`), and move `DocumentsProvider`
-onto `sqflite` per the schema in section 4.
+**Phase 6 — Cloud**: wire `SignInScreen` to real Google/Apple/email
+auth (Firebase Auth or Supabase), and give `DocumentsProvider` a sync
+layer — upload queue, retry, and conflict resolution — that activates
+only once a user is signed in, keeping local-first behavior unchanged
+for everyone else.
