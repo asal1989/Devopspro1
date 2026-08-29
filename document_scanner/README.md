@@ -5,15 +5,20 @@ Microsoft Lens / CamScanner, with an original UI. Built with Flutter using
 clean architecture so native scanning, OCR, and PDF pipelines can be
 dropped in without restructuring the app.
 
-This repository currently contains **Phases 1–6**: the full UI flow
+This repository now contains **all 7 phases**: the full UI flow
 (Phase 1), a real device camera with gallery import (Phase 2), real
 pixel-level image processing — perspective correction, rotation, and
 filters (Phase 3), real multi-page PDF generation, storage, and sharing
 (Phase 4), real on-device OCR with SQLite-backed persistence (Phase 5),
-and real Google/email auth with an outbound cloud sync queue (Phase 6)
-— gated behind a Firebase project you provide (see section 8). AI
-features (Phase 7) are still UI-complete but simulated — see the phase
-sections below for exactly what's real versus mocked in each area.
+real Google/email auth with an outbound cloud sync queue (Phase 6), and
+real AI document features — summarization, Q&A, smart classification,
+invoice/receipt extraction, and natural-language search (Phase 7).
+Phases 6 and 7 are both gated behind infrastructure you provide (a
+Firebase project, and a deployed backend proxy holding your Anthropic
+API key — see sections 8 and 9) since neither can work without your own
+credentials; everything else works standalone. See the phase sections
+below for exactly what's real versus what's still a documented gap in
+each area.
 
 ---
 
@@ -69,10 +74,16 @@ and real persistence (Phase 5, `sqflite`) only meant adding
 | `google_sign_in` | Google account picker used by Firebase Auth's Google provider (Phase 6) |
 | `cloud_firestore` | Document metadata sync (Phase 6) |
 | `firebase_storage` | Generated PDF upload (Phase 6) |
+| `http` | Calls the AI features backend proxy — Dart has no official Anthropic SDK, and the client must never hold the real API key (Phase 7) |
 
-**Planned for later phases** (not added yet, so the app stays buildable
-today — add each when its phase starts):
-| Phase | Package(s) | Purpose |
+**Backend** (`functions/`, deployed separately from the Flutter app):
+| Package | Purpose |
+|---|---|
+| `firebase-functions` | Hosts the AI proxy (`functions/index.js`) that holds the real Anthropic API key server-side (Phase 7) |
+
+**Planned for later work** (not added yet, so the app stays buildable
+today — add each when it's tackled):
+| Item | Package(s) | Purpose |
 |---|---|---|
 | Apple Sign-In | `sign_in_with_apple` + Xcode capability/entitlement setup | Needs native iOS project config this repo doesn't have yet — see Phase 6 notes |
 | Security | `flutter_secure_storage` | Sensitive metadata at rest |
@@ -121,9 +132,18 @@ lib/
       data/                       AuthService (real Firebase Auth: Google + email/password)
       presentation/providers/     AuthProvider
       presentation/screens/       SignInScreen (optional)
+    ai/
+      domain/entities/            DocumentSummary, StructuredExtraction, AiChatMessage
+      data/                       AiService (real HTTP client to the backend proxy below)
+      presentation/screens/       DocumentSummaryScreen, AskQuestionScreen, ExtractionScreen
 
   shared/widgets/                 PrimaryButton, SectionHeader, AppShell (bottom nav), PageThumbnail (real file or placeholder)
   main.dart                       Provider wiring + MaterialApp.router
+
+functions/                        Separate Node.js project (Firebase Cloud Functions) — the AI backend
+  index.js                        Real proxy to the Claude Messages API; holds the Anthropic API key as a secret, never in the app
+  package.json
+firebase.json                     Points `firebase deploy --only functions` at functions/
 ```
 
 ## 4. Database structure (Phase 5 — `documents`/`pages` implemented)
@@ -373,9 +393,61 @@ catches the init failure at startup and the app runs in local-only mode.
   that's the whole policy. Real cross-device conflict resolution needs
   the download half described above first.
 
+## 9. AI features strategy (Phase 7 — implemented, gated on your own backend deployment)
+
+**Dart has no official Anthropic SDK**, so
+[`AiService`](lib/features/ai/data/ai_service.dart) talks to Claude over
+raw HTTP (`package:http`) — per the same skill/guidance that governs
+Claude API integrations, an unsupported-SDK language uses raw HTTP
+rather than inventing SDK bindings that don't exist. Just as
+importantly: **`AiService` never calls `api.anthropic.com` directly**
+and never carries an API key. A secret embedded in a compiled mobile
+app binary can always be extracted by decompiling it, so the app talks
+only to [`functions/index.js`](functions/index.js) — a small Firebase
+Cloud Function you deploy yourself that holds the real Anthropic key as
+a secret and forwards requests to Claude on the app's behalf. This is
+the same "your own infrastructure, clearly gated" pattern as Phase 6's
+Firebase project, applied to AI.
+
+- **Model & requests**: the backend calls `claude-opus-5` (Claude's
+  current flagship model) via `POST /v1/messages` with a task-specific
+  system prompt instructing Claude to respond with *only* valid JSON —
+  a defensive, code-fence-stripping parse (`parseJsonLoosely` in
+  `functions/index.js`) handles the response rather than relying on the
+  structured-outputs beta, which isn't necessary for single-call
+  classification/extraction/summarization tasks like these.
+- **Five real features, one client + one backend route each**:
+  - **Summarization** — `AiService.summarize` → `DocumentSummaryScreen`. 2-3 sentence summary + up to 5 key points from the document's OCR text.
+  - **Ask a question** — `AiService.ask` → `AskQuestionScreen`. A small chat that resends the document text plus prior turns each request so follow-ups work; answers itself when the document doesn't contain the answer rather than guessing.
+  - **Smart classification** — `AiService.classify`, surfaced as a "Suggest a category" action on `DocumentSummaryScreen`. Returns one of the existing `DocumentCategory` enum names; the user applies it with one tap via `DocumentsProvider.updateDocument` — Claude suggests, it never silently overwrites.
+  - **Invoice/receipt/general extraction** — `AiService.extract` → `ExtractionScreen`. Matches the spec's own example almost exactly (vendor, invoice number, amount, date for invoices); returns a flexible label→value map rather than rigid per-type classes, since the real field set genuinely varies by document.
+  - **Natural-language document search** — `AiService.search`, wired into `DocumentsScreen` via a new AI-search toggle (the sparkle icon in the search bar) that sends the query plus every document's id/name/OCR-snippet and gets back a ranked list of matching ids.
+- **Every feature requires OCR text first.** All five calls operate on `ScannedDocument.extractedText` (Phase 5's real OCR output) — a document with no extracted text shows a direct "Extract Text first" message in each AI screen instead of silently failing or fabricating an answer from nothing.
+- **Failures never crash the app**: every backend call goes through `AiService._call`, which throws `AiException` (added to `core/errors/app_exception.dart` alongside the app's other typed failures) for a missing/unconfigured backend, a network error, a non-200 response, or unparseable JSON — every AI screen catches it and shows the message inline with a retry action.
+- **Not implemented — Premium gating.** The original spec's AI section calls out several of these as Premium features. No payment/entitlement system exists yet (per the task's own instruction not to build monetization before the core scanner is stable), so every AI feature here is unconditionally available once the backend is deployed. Gating them is a small follow-up once the app has a real premium entitlement flag to check (the spec's own Premium Architecture section) — each `AiService` call site is already isolated enough to wrap in a single `if (isPremium)` check.
+
 ---
 
-## Phases 1–6 (this delivery)
+## Phases 1–7 (complete)
+
+### Files created/modified for Phase 7
+New: `lib/features/ai/` (domain entities, `AiService`, three screens),
+`functions/index.js` + `functions/package.json` + `functions/.gitignore`,
+`firebase.json`. Modified: `core/errors/app_exception.dart` (+
+`AiException`), `AppRoutes`/`app_router.dart`, `PdfPreviewScreen` (AI
+action chips), `DocumentsScreen` (AI search toggle), `pubspec.yaml`. See
+the folder structure and section 9 above for what each does.
+
+### What Phase 7 adds
+- **Summarize**, **Ask AI**, and **Extract Info** action chips on PDF
+  Preview, each a real Claude call once the backend is deployed.
+- A "Suggest a category" button on the new AI Summary screen that
+  applies ML Kit OCR text + Claude to `DocumentCategory` — one tap to
+  accept, never silent.
+- A sparkle toggle in the Documents search bar switches from substring
+  search to real natural-language search across your whole library.
+- A backend you deploy once (`functions/`) that is the only thing that
+  ever holds your real Anthropic API key.
 
 ### Files created/modified since Phase 5
 New: `lib/firebase_options.dart` (placeholder — see Installation
@@ -450,6 +522,30 @@ flutter create . --platforms=android,ios --org com.scanova.app
 Until those steps are done, `FirebaseBootstrap` catches the init
 failure and the app runs normally in local-only mode — Sign In shows a
 "Cloud sign-in is not set up yet" message instead of crashing.
+
+**To enable the AI features** (Summarize, Ask AI, Extract Info,
+Smart Classification, AI Search — everything else works without this):
+
+1. Get an Anthropic API key from https://console.anthropic.com.
+2. You need the same Firebase project as above (Cloud Functions billing
+   requires the Blaze plan — Functions has a generous free tier, but the
+   plan itself must be upgraded from Spark).
+3. `npm install -g firebase-tools` (if you don't have it), then
+   `firebase login`.
+4. From the `document_scanner/` project root: `firebase use --add` and
+   pick your Firebase project — this writes `.firebaserc`.
+5. `firebase functions:secrets:set ANTHROPIC_API_KEY` and paste your
+   key when prompted.
+6. `cd functions && npm install && cd ..`, then
+   `firebase deploy --only functions`. The command prints the deployed
+   function's URL (`https://<region>-<project>.cloudfunctions.net/aiProxy`).
+7. Paste that URL into `AiConfig.backendBaseUrl` in
+   [`lib/features/ai/data/ai_service.dart`](lib/features/ai/data/ai_service.dart)
+   (replacing the `REPLACE_WITH_...` placeholder) and rebuild the app.
+
+Until this is done, every AI screen shows "AI features aren't set up
+yet" instead of hanging or crashing (`AiConfig.isConfigured` gates every
+call in `AiService`).
 
 This preserves the existing `lib/`, `pubspec.yaml`, and `test/` — it
 only adds the native project shells. **After scaffolding**, add the
@@ -530,6 +626,23 @@ Manual walkthrough checklist:
 16. Sign out — confirm Cloud Sync turns off and the Account row reverts
     to "Not signed in", while every local document stays exactly as it
     was (signing out never deletes local data).
+17. **With the AI backend deployed** (see Installation commands): on a
+    document that's been through Extract Text, open PDF Preview and tap
+    **Summarize** — confirm a real summary and key points appear (not a
+    placeholder). Tap **Ask AI** and ask a question the document
+    actually answers, then a follow-up that depends on the first
+    answer — confirm both work. Tap **Extract Info**, switch between
+    Invoice/Receipt/Names-Dates-Amounts, and confirm the fields change
+    per document type.
+18. In Documents, tap the sparkle icon in the search bar and type a
+    natural-language query (e.g. "documents about payments") — confirm
+    it returns relevant documents rather than doing a literal substring
+    match, and that toggling the sparkle back off restores normal
+    search.
+19. **Without the AI backend deployed** (the default state of this
+    repo): confirm every AI screen and the AI search toggle show "AI
+    features aren't set up yet" instead of hanging, spinning forever,
+    or crashing.
 
 Performance note: the 1/10/50/100-page load testing called out in the
 spec has not been run here (no device/SDK available in this
@@ -550,8 +663,20 @@ profiled on a real mid-range device before shipping.
   setup steps. Nothing else in the app depends on it.
 - **Apple Sign-In is not implemented** — needs Xcode entitlements this
   repo can't scaffold headlessly; see section 8.
-- AI features (Phase 7) remain simulated; unchanged from the Phase 1
-  delivery.
+- **AI features need your own backend deployment and Anthropic API
+  key** — see section 9 and the Installation commands. Every AI screen
+  degrades to a clear "not set up yet" message rather than hanging.
+- **AI features are not Premium-gated** — no payment/entitlement system
+  exists yet (by design, per the task's own instruction not to build
+  monetization before the core scanner is stable), so summarize/ask/
+  extract/search/classify are all unconditionally available once the
+  backend is deployed. See section 9's last bullet for how small the
+  follow-up is once a real entitlement flag exists.
+- **AI search and extraction quality depend on OCR quality first** —
+  since every AI feature reads `ScannedDocument.extractedText`, a badly
+  recognized scan (see the OCR limitations above) produces a
+  correspondingly worse summary/answer/extraction. There's no separate
+  vision-based fallback that reads the image directly.
 - Database migrations now have exactly one real example
   (`DocumentsDatabase` v1→v2, adding `updated_at`/`synced_at` and
   `sync_queue`) — the pattern exists, but it's only been exercised
@@ -575,13 +700,29 @@ profiled on a real mid-range device before shipping.
   `pw.MemoryImage.width`/`.height` getters (`PdfGenerator`), and the
   `google_sign_in: ^6.2.1` interactive `signIn()` API surface used in
   `AuthService` (a major-version redesign of that package's API exists
-  upstream; pin/verify before upgrading).
+  upstream; pin/verify before upgrading), and the Firebase Cloud
+  Functions v2 `defineSecret`/`onRequest` pattern used in
+  `functions/index.js`.
 
-### Next phase
-**Phase 7 — AI features**: document summarization, "ask a question
-about this document," smart classification, and structured extraction
-(invoice/receipt fields, names/dates/amounts) — most naturally layered
-on top of the real OCR text `OcrService` already produces, calling out
-to an LLM API behind a `Premium`-gated interface per the monetization
-plan. Natural-language document search over the (still local-only)
-library rounds it out.
+### All 7 phases are now implemented
+This closes out the phased build described in section "Development
+Strategy" — every phase from UI prototype through AI features has a
+real implementation behind it, each with its scope and any deliberate
+cuts documented in its own numbered section above (5 through 9) rather
+than silently glossed over. What's left is exactly what those sections
+already call out as follow-up work, not a hidden backlog:
+
+- Real-time OpenCV-based document-edge detection (section 5)
+- PDF password protection / encryption (section 7)
+- Tamil/Kannada on-device OCR, or a cloud OCR fallback (section 6)
+- Two-way cloud sync with real conflict resolution (section 8)
+- Apple Sign-In (section 8)
+- Premium entitlements/payments, and gating the AI features behind them (section 9)
+- SQLite-backed folders as a first-class entity (section 4)
+
+Beyond that follow-up list, the two things most worth doing before
+shipping are the ones repeated throughout this README: actually running
+`flutter analyze`/`flutter test`/the app on a real device (none of this
+has been through a Flutter SDK in this environment), and profiling the
+image-processing/PDF pipeline at the 50-100 page scale the spec calls
+out for performance testing.

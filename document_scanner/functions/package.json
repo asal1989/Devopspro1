@@ -1,0 +1,15 @@
+{
+  "name": "scanova-ai-functions",
+  "description": "Backend proxy that holds the Anthropic API key server-side and forwards AI feature requests from the Flutter app to Claude.",
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "scripts": {
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "firebase-functions": "^6.0.1"
+  },
+  "private": true
+}

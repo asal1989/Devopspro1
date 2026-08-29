@@ -35,3 +35,7 @@ class StorageException extends AppException {
 class NetworkException extends AppException {
   const NetworkException(super.message, {super.cause});
 }
+
+class AiException extends AppException {
+  const AiException(super.message, {super.cause});
+}

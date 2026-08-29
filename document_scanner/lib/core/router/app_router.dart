@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../features/ai/presentation/screens/ask_question_screen.dart';
+import '../../features/ai/presentation/screens/document_summary_screen.dart';
+import '../../features/ai/presentation/screens/extraction_screen.dart';
 import '../../features/authentication/presentation/screens/sign_in_screen.dart';
 import '../../features/documents/domain/entities/document.dart';
 import '../../features/ocr/presentation/screens/ocr_result_screen.dart';
@@ -27,6 +30,9 @@ class AppRoutes {
   static const pdfPreview = '/scan/pdf-preview';
   static const ocr = '/ocr';
   static const signIn = '/sign-in';
+  static const aiSummary = '/ai/summary';
+  static const aiAsk = '/ai/ask';
+  static const aiExtract = '/ai/extract';
 }
 
 final GoRouter appRouter = GoRouter(
@@ -77,6 +83,18 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: AppRoutes.signIn,
       builder: (context, state) => const SignInScreen(),
+    ),
+    GoRoute(
+      path: AppRoutes.aiSummary,
+      builder: (context, state) => DocumentSummaryScreen(document: state.extra as ScannedDocument),
+    ),
+    GoRoute(
+      path: AppRoutes.aiAsk,
+      builder: (context, state) => AskQuestionScreen(document: state.extra as ScannedDocument),
+    ),
+    GoRoute(
+      path: AppRoutes.aiExtract,
+      builder: (context, state) => ExtractionScreen(document: state.extra as ScannedDocument),
     ),
   ],
 );

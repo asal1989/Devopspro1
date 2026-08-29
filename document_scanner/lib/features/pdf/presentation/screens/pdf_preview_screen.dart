@@ -100,6 +100,18 @@ class PdfPreviewScreen extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: AppSpacing.lg),
+          Text('AI', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+          const SizedBox(height: AppSpacing.sm),
+          Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.sm,
+            children: [
+              _ActionChip(icon: Icons.auto_awesome_rounded, label: 'Summarize', onTap: () => context.push(AppRoutes.aiSummary, extra: doc)),
+              _ActionChip(icon: Icons.chat_bubble_outline_rounded, label: 'Ask AI', onTap: () => context.push(AppRoutes.aiAsk, extra: doc)),
+              _ActionChip(icon: Icons.receipt_long_rounded, label: 'Extract Info', onTap: () => context.push(AppRoutes.aiExtract, extra: doc)),
+            ],
+          ),
         ],
       ),
       bottomNavigationBar: SafeArea(

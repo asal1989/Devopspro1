@@ -3,7 +3,9 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../../../core/constants/app_spacing.dart';
+import '../../../../core/errors/app_exception.dart';
 import '../../../../core/router/app_router.dart';
+import '../../../ai/data/ai_service.dart';
 import '../../../home/presentation/widgets/document_card.dart';
 import '../../domain/entities/document.dart';
 import '../providers/documents_provider.dart';
@@ -22,19 +24,54 @@ class DocumentsScreen extends StatefulWidget {
 }
 
 class _DocumentsScreenState extends State<DocumentsScreen> {
+  final _aiService = AiService();
   _ViewMode _view = _ViewMode.grid;
   _Filter _filter = _Filter.all;
   DocumentSort _sort = DocumentSort.newest;
   String _query = '';
 
+  bool _aiSearchMode = false;
+  bool _aiSearching = false;
+  List<String>? _aiMatchIds;
+
+  Future<void> _runAiSearch(BuildContext context, String query) async {
+    if (query.trim().isEmpty) {
+      setState(() => _aiMatchIds = null);
+      return;
+    }
+    setState(() => _aiSearching = true);
+    final provider = context.read<DocumentsProvider>();
+    final candidates = provider.all
+        .map((d) => {'id': d.id, 'name': d.name, 'snippet': d.extractedText ?? ''})
+        .toList();
+    try {
+      final ids = await _aiService.search(query, candidates);
+      if (!mounted) return;
+      setState(() {
+        _aiMatchIds = ids;
+        _aiSearching = false;
+      });
+    } on AiException catch (e) {
+      if (!mounted) return;
+      setState(() => _aiSearching = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<DocumentsProvider>();
     var docs = _filter == _Filter.favorites ? provider.favorites : provider.all;
-    if (_query.isNotEmpty) {
-      docs = docs.where((d) => d.name.toLowerCase().contains(_query.toLowerCase())).toList();
+
+    if (_aiSearchMode && _aiMatchIds != null) {
+      final byId = {for (final d in docs) d.id: d};
+      docs = _aiMatchIds!.map((id) => byId[id]).whereType<ScannedDocument>().toList();
+    } else {
+      if (_query.isNotEmpty) {
+        docs = docs.where((d) => d.name.toLowerCase().contains(_query.toLowerCase())).toList();
+      }
+      docs = provider.sorted(docs, _sort);
     }
-    docs = provider.sorted(docs, _sort);
 
     return SafeArea(
       child: Column(
@@ -65,12 +102,29 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
             child: TextField(
-              decoration: const InputDecoration(
-                hintText: 'Search documents',
-                prefixIcon: Icon(Icons.search_rounded),
+              decoration: InputDecoration(
+                hintText: _aiSearchMode ? 'Ask in plain language…' : 'Search documents',
+                prefixIcon: _aiSearching
+                    ? const Padding(
+                        padding: EdgeInsets.all(14),
+                        child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                      )
+                    : const Icon(Icons.search_rounded),
                 isDense: true,
+                suffixIcon: IconButton(
+                  tooltip: _aiSearchMode ? 'Switch to text search' : 'Switch to AI search',
+                  icon: Icon(Icons.auto_awesome_rounded, color: _aiSearchMode ? Theme.of(context).colorScheme.primary : null),
+                  onPressed: () => setState(() {
+                    _aiSearchMode = !_aiSearchMode;
+                    _aiMatchIds = null;
+                  }),
+                ),
               ),
-              onChanged: (v) => setState(() => _query = v),
+              onChanged: (v) => setState(() {
+                _query = v;
+                if (_aiSearchMode) _aiMatchIds = null;
+              }),
+              onSubmitted: _aiSearchMode ? (v) => _runAiSearch(context, v) : null,
             ),
           ),
           const SizedBox(height: AppSpacing.sm),

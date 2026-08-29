@@ -46,6 +46,10 @@ dependencies:
   firebase_storage: ^12.3.4
   google_sign_in: ^6.2.1
 
+  # AI features (Phase 7) — raw HTTP to a backend proxy; Dart has no
+  # official Anthropic SDK, and the API key must never ship in the app.
+  http: ^1.2.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
