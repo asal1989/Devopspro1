@@ -490,13 +490,11 @@ flutter pub get
 flutter run
 ```
 
-`android/` and `ios/` platform folders are not present (this project
-was authored without a local Flutter SDK to scaffold and verify them).
-Generate them once with:
-
-```bash
-flutter create . --platforms=android,ios --org com.scanova.app
-```
+`android/` and `ios/` are already committed — `flutter create .
+--platforms=android,ios --org com.scanova.app` was actually run against
+this code (see **Verification** below), so there's no scaffolding step
+left to do. The camera/photo-library permissions are already in
+`AndroidManifest.xml` and `Info.plist` too.
 
 **To enable Sign In and Cloud Sync**, you need a real Firebase project
 (everything else in the app works without this):
@@ -547,26 +545,33 @@ Until this is done, every AI screen shows "AI features aren't set up
 yet" instead of hanging or crashing (`AiConfig.isConfigured` gates every
 call in `AiService`).
 
-This preserves the existing `lib/`, `pubspec.yaml`, and `test/` — it
-only adds the native project shells. **After scaffolding**, add the
-permissions Phase 2's camera/gallery features need (not yet present
-since the native folders don't exist in this commit):
+### Verification
 
-- **Android** (`android/app/src/main/AndroidManifest.xml`, inside
-  `<manifest>`, before `<application>`):
-  ```xml
-  <uses-permission android:name="android.permission.CAMERA" />
-  <uses-feature android:name="android.hardware.camera" android:required="false" />
-  ```
-  Also set `minSdkVersion` to at least 21 in
-  `android/app/build.gradle` (the `camera` plugin requires it).
-- **iOS** (`ios/Runner/Info.plist`, inside the top-level `<dict>`):
-  ```xml
-  <key>NSCameraUsageDescription</key>
-  <string>Scanova needs camera access to scan documents.</string>
-  <key>NSPhotoLibraryUsageDescription</key>
-  <string>Scanova needs photo library access to import documents.</string>
-  ```
+This has now actually been built and run — not just read — in the
+environment that produced it:
+
+```bash
+flutter create . --platforms=android,ios --org com.scanova.app   # scaffolded android/, ios/
+flutter pub get                                                   # every dependency across all 7 phases resolved
+flutter analyze                                                   # 0 errors, 0 warnings (style-level info only)
+flutter test                                                      # 2/2 passing
+```
+
+`flutter analyze` and `flutter test` each caught a real bug that no
+amount of careful reading had: `pw.MemoryImage.width`/`.height` turned
+out to be nullable (fixed in `PdfGenerator`), the `camera` package's
+`CameraException` isn't a `const` constructor (fixed in
+`ScannerCameraScreen`), and — the most important one — `AuthService`
+was constructing `FirebaseAuth.instance` in an eager field initializer,
+which throws `[core/no-app]` the instant it's touched if Firebase isn't
+configured, crashing the entire app at startup in local-only mode. That
+defeated the whole point of Phase 6's `FirebaseBootstrap.isAvailable`
+guard, and is now fixed by making `AuthService`'s Firebase/Google
+Sign-In handles lazy getters instead.
+
+What's still **not** verified: an actual Gradle/Android build (no
+Android SDK in this environment, just the Flutter/Dart toolchain) or
+running on a real device/emulator — see Known limitations below.
 
 ### Testing instructions
 
@@ -685,24 +690,19 @@ profiled on a real mid-range device before shipping.
 - Folders and favorites-as-a-first-class-entity aren't real yet —
   `ScannedDocument.folder` is a free-text field with no `folders` table
   behind it (per section 4), and there's no UI to assign one yet.
-- `android/` and `ios/` platform folders are not included in this
-  commit — see Installation commands above for the one-time scaffold
-  step, the manifest/plist permissions, and the Firebase setup to add
-  afterward.
-- None of this has been run through `flutter analyze`/`flutter test`/a
-  real device in this environment (no Flutter SDK installed here). The
-  camera, image-processing, PDF, OCR, SQLite, auth, and sync code paths
-  in particular need verification on a real device before shipping —
-  review with those commands and the manual walkthrough above first.
-  Package details that couldn't be verified without SDK/docs access and
-  are worth double-checking first: the
+- `android/` and `ios/` platform folders **are** committed (see
+  Verification above) with the camera/photo-library permissions
+  already in place — there's no scaffold step left.
+- `flutter analyze` and `flutter test` both pass (see Verification
+  above), but that's still the Dart/Flutter toolchain only — **no
+  Android SDK was available in this environment**, so there's no
+  verified Gradle build, no run on a real device/emulator, and the
   `TextRecognitionScript.devanagiri` enum spelling (`OcrService`), the
-  `pw.MemoryImage.width`/`.height` getters (`PdfGenerator`), and the
-  `google_sign_in: ^6.2.1` interactive `signIn()` API surface used in
-  `AuthService` (a major-version redesign of that package's API exists
-  upstream; pin/verify before upgrading), and the Firebase Cloud
-  Functions v2 `defineSecret`/`onRequest` pattern used in
-  `functions/index.js`.
+  `google_sign_in: ^6.2.1` interactive `signIn()` API surface
+  (`AuthService`), and the Firebase Cloud Functions v2
+  `defineSecret`/`onRequest` pattern (`functions/index.js`) are all
+  still unverified beyond "the Dart/Node syntax checks out." Treat a
+  real device run as the next required step, not an optional one.
 
 ### All 7 phases are now implemented
 This closes out the phased build described in section "Development
@@ -721,8 +721,9 @@ already call out as follow-up work, not a hidden backlog:
 - SQLite-backed folders as a first-class entity (section 4)
 
 Beyond that follow-up list, the two things most worth doing before
-shipping are the ones repeated throughout this README: actually running
-`flutter analyze`/`flutter test`/the app on a real device (none of this
-has been through a Flutter SDK in this environment), and profiling the
-image-processing/PDF pipeline at the 50-100 page scale the spec calls
-out for performance testing.
+shipping are: running on a real device/emulator with a full Android
+SDK (this has only been through `flutter analyze`/`flutter test` on
+the Dart/Flutter toolchain — see Verification above — not an actual
+Gradle build or a device), and profiling the image-processing/PDF
+pipeline at the 50-100 page scale the spec calls out for performance
+testing.
