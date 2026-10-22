@@ -70,7 +70,7 @@ class _ScannerCameraScreenState extends State<ScannerCameraScreen> with WidgetsB
     try {
       _cameras = await availableCameras();
       if (_cameras.isEmpty) {
-        throw const CameraException('no_cameras', 'No camera found on this device.');
+        throw CameraException('no_cameras', 'No camera found on this device.');
       }
       await _openCamera(_cameraIndex);
     } catch (e) {

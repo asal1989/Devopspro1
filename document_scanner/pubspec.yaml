@@ -57,6 +57,7 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  assets:
-    - assets/images/
-    - assets/icons/
+  # No bundled assets yet — all icons are Material Icons and all
+  # imagery is either a real captured photo or a generated placeholder
+  # color, so there's nothing in assets/images or assets/icons to
+  # declare. Add an `assets:` list here if that changes.

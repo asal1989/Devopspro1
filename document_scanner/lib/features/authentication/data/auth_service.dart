@@ -16,8 +16,14 @@ class AuthException extends AppException {
 /// fail with an opaque platform-channel error — scanning, editing, OCR,
 /// and PDF creation never require any of this to work.
 class AuthService {
-  final fb.FirebaseAuth _auth = fb.FirebaseAuth.instance;
-  final GoogleSignIn _googleSignIn = GoogleSignIn();
+  // Lazy on purpose: `FirebaseAuth.instance` itself throws
+  // `[core/no-app]` the moment it's touched if Firebase was never
+  // initialized (an unconfigured project, or a widget test with no
+  // platform channels). Every call site below checks
+  // FirebaseBootstrap.isAvailable before this getter is ever read, so
+  // constructing an AuthService stays side-effect-free.
+  fb.FirebaseAuth get _auth => fb.FirebaseAuth.instance;
+  GoogleSignIn get _googleSignIn => GoogleSignIn();
 
   Stream<AppUser?> get authStateChanges {
     if (!FirebaseBootstrap.isAvailable) return Stream.value(null);

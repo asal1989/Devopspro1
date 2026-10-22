@@ -32,7 +32,7 @@ class DefaultFirebaseOptions {
   // Kept as unreachable reference points for what `flutterfire configure`
   // fills in — never constructed directly (currentPlatform always throws
   // above until this file is regenerated).
-  // ignore: unused_element
+  // ignore: unused_field
   static const FirebaseOptions _web = FirebaseOptions(
     apiKey: 'REPLACE_WITH_YOUR_WEB_API_KEY',
     appId: 'REPLACE_WITH_YOUR_WEB_APP_ID',
@@ -41,7 +41,7 @@ class DefaultFirebaseOptions {
     storageBucket: 'REPLACE_WITH_YOUR_PROJECT_ID.appspot.com',
   );
 
-  // ignore: unused_element
+  // ignore: unused_field
   static const FirebaseOptions _android = FirebaseOptions(
     apiKey: 'REPLACE_WITH_YOUR_ANDROID_API_KEY',
     appId: 'REPLACE_WITH_YOUR_ANDROID_APP_ID',
@@ -50,7 +50,7 @@ class DefaultFirebaseOptions {
     storageBucket: 'REPLACE_WITH_YOUR_PROJECT_ID.appspot.com',
   );
 
-  // ignore: unused_element
+  // ignore: unused_field
   static const FirebaseOptions _ios = FirebaseOptions(
     apiKey: 'REPLACE_WITH_YOUR_IOS_API_KEY',
     appId: 'REPLACE_WITH_YOUR_IOS_APP_ID',

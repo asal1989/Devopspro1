@@ -100,8 +100,8 @@ pdfpkg.PdfPageFormat _resolvePageFormat(PdfPageFormat format, pw.MemoryImage ima
       return pdfpkg.PdfPageFormat.letter;
     case PdfPageFormat.original:
       const dpi = 150.0;
-      final width = image.width.toDouble() / dpi * 72;
-      final height = image.height.toDouble() / dpi * 72;
+      final width = (image.width ?? 1240).toDouble() / dpi * 72;
+      final height = (image.height ?? 1754).toDouble() / dpi * 72;
       return pdfpkg.PdfPageFormat(width, height);
   }
 }
